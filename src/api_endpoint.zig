@@ -156,6 +156,14 @@ fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
                 }
 
                 // send response
+                //
+                //
+                //
+                // TODO: ALWAYS SEND THE CURRENT REQ / SEC IN THE RESPONSE FOR TESTING / VALIDATION
+                //
+                //
+                //
+                //
                 try std.json.stringify(.{ .delay_ms = 0 }, .{}, string.writer());
                 return r.sendJson(string.items);
             } else {
