@@ -17,9 +17,6 @@ timestamps: Deque,
 /// Mutex to protect our timestamps collection
 timestamps_mutex: std.Thread.Mutex = .{},
 
-/// Mutex to serialize all delays
-delay_mutex: std.Thread.Mutex = .{},
-
 /// Mutex to access / update params
 params_mutex: std.Thread.Mutex = .{},
 
@@ -121,7 +118,7 @@ fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
         break :blk false;
     };
 
-    const current_time = std.time.milliTimestamp();
+    const current_time_ms = std.time.milliTimestamp();
 
     {
         var json_buf: [1024]u8 = undefined;
@@ -131,41 +128,29 @@ fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
         self.timestamps_mutex.lock();
         defer self.timestamps_mutex.unlock();
 
-        // TODO: maybe make this safer by not using .? here:
         // remove old timestamps outside of our 60s window
-        while (self.timestamps.count() > 0 and current_time - self.timestamps.peekMin().? > 60) {
+        while (self.timestamps.count() > 0 and current_time_ms - self.timestamps.peekMin().? > 60 * std.time.ms_per_s) { // TODO: maybe make this safer by not using .? here:
             _ = self.timestamps.removeMin();
         }
 
         const req_per_min = self.timestamps.count();
 
+        // now
+
         if (self.timestamps.count() < self.rate_limit) {
             // we've made less requests than are allowed per minute within the last minute
-            try self.timestamps.add(current_time + self.delay_ms * 1000);
+            // so we don't need to delay. we will delay for the default delay in that case
+            try self.timestamps.add(current_time_ms + self.delay_ms); // add the time in the future when this request won't count anymore: after the delay
             r.setStatus(.ok);
             if (handle_delay) {
                 std.log.debug("Sleeping for {} ms", .{self.delay_ms});
                 var delay_ns: u64 = @intCast(self.delay_ms);
                 delay_ns *= std.time.ns_per_ms;
 
-                {
-                    // we sleep locked so we serialize all sleeps so our algo can rely on
-                    // all requests to the API having been done sequentially
-                    // TODO: demonstrate if or that this always works out well in parallel scenarios
-                    self.delay_mutex.lock();
-                    defer self.delay_mutex.unlock();
-                    std.time.sleep(delay_ns);
-                }
+                // TODO: demonstrate if or that this always works out well in parallel scenarios
+                std.time.sleep(delay_ns);
 
                 // send response
-                //
-                //
-                //
-                // TODO: ALWAYS SEND THE CURRENT REQ / SEC IN THE RESPONSE FOR TESTING / VALIDATION
-                //
-                //
-                //
-                //
                 try std.json.stringify(.{ .delay_ms = 0, .current_req_per_min = req_per_min }, .{}, string.writer());
                 return r.sendJson(string.items);
             } else {
@@ -175,26 +160,20 @@ fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
             }
         } else {
             // we need to work out when we can make a request again
-            const oldest_request_time = self.timestamps.peekMin().?;
-            var delay_ms = 60 * std.time.ms_per_s - (current_time - oldest_request_time);
-            // TODO: reason why we subtract here:
-            delay_ms -= self.delay_ms;
+            const oldest_request_time_ms = self.timestamps.peekMin().?;
+
+            // calculate the delay:
+            var delay_ms = 60 * std.time.ms_per_s - (current_time_ms - oldest_request_time_ms);
             if (delay_ms < 0) delay_ms = self.delay_ms;
-            try self.timestamps.add(current_time + delay_ms);
+            try self.timestamps.add(current_time_ms + delay_ms);
             r.setStatus(.ok);
             if (handle_delay) {
                 std.log.debug("Sleeping for {} ms", .{delay_ms});
                 var delay_ns: u64 = @intCast(delay_ms);
                 delay_ns *= std.time.ns_per_ms;
 
-                {
-                    // we sleep locked so we serialize all sleeps so our algo can rely on
-                    // all requests to the API having been done sequentially
-                    // TODO: demonstrate if or that this always works out well in parallel scenarios
-                    self.delay_mutex.lock();
-                    defer self.delay_mutex.unlock();
-                    std.time.sleep(delay_ns);
-                }
+                // TODO: demonstrate if or that this always works out well in parallel scenarios
+                std.time.sleep(delay_ns);
 
                 // send response
                 try std.json.stringify(.{ .delay_ms = 0, .current_req_per_min = req_per_min }, .{}, string.writer());
