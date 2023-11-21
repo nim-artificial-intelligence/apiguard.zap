@@ -48,7 +48,7 @@ pub fn main() !void {
     const slug = std.os.getenv("APIGUARD_SLUG") orelse "/apiguard";
     const port = parseEnvInt(usize, "port", "APIGUARD_PORT", DEFAULT_PORT);
     const initial_limit = parseEnvInt(usize, "API request limit", "APIGUARD_LIMIT", DEFAULT_LIMIT);
-    const initial_default_delay_ms = parseEnvInt(usize, "API default delay", "APIGUARD_DELAY", DEFAULT_DELAY_MS);
+    const initial_default_delay_ms = parseEnvInt(i64, "API default delay", "APIGUARD_DELAY", DEFAULT_DELAY_MS);
 
     const api_token = std.os.getenv("APIGUARD_AUTH_TOKEN") orelse "renerocksai";
 

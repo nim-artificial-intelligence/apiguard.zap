@@ -26,11 +26,11 @@ params_mutex: std.Thread.Mutex = .{},
 endpoint: zap.SimpleEndpoint,
 slug: []const u8,
 rate_limit: usize,
-delay_ms: usize,
+delay_ms: i64,
 
 const Self = @This();
 
-pub fn init(alloc: std.mem.Allocator, slug: []const u8, rate_limit: usize, delay_ms: usize) Self {
+pub fn init(alloc: std.mem.Allocator, slug: []const u8, rate_limit: usize, delay_ms: i64) Self {
     return .{
         .allocator = alloc,
         .timestamps = Deque.init(alloc, {}),
@@ -105,13 +105,59 @@ fn getRateLimit(self: *Self, r: zap.SimpleRequest) !void {
 }
 
 fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
-    _ = self;
-    r.setStatus(.ok);
-    r.sendJson(
-        \\{{ "status": "OK", "delay_ms": 30 }}
-    ) catch |err| {
-        std.log.err("Could not send response in requestAccess: {any}", .{err});
+    r.parseQuery();
+    const handle_delay: bool = blk: {
+        if (r.getParamStr("handle_delay", self.allocator, false)) |maybe_str| {
+            if (maybe_str) |*s| {
+                defer s.deinit();
+                if (std.mem.eql(u8, s.str, "true")) {
+                    break :blk true;
+                }
+            }
+        } else |_| {
+            // getting param str failed
+            break :blk false;
+        }
+        break :blk false;
     };
+
+    const current_time = std.time.milliTimestamp();
+
+    {
+        var json_buf: [1024]u8 = undefined;
+        var fba = std.heap.FixedBufferAllocator.init(&json_buf);
+        var string = std.ArrayList(u8).init(fba.allocator());
+
+        self.timestamps_mutex.lock();
+        defer self.timestamps_mutex.unlock();
+
+        // TODO: maybe make this safer by not using .? here:
+        // remove old timestamps outside of our 60s window
+        while (self.timestamps.count() > 0 and current_time - self.timestamps.peekMin().? > 60) {
+            _ = self.timestamps.removeMin();
+        }
+
+        if (self.timestamps.count() < self.rate_limit) {
+            // we've made less requests than are allowed per minute within the last minute
+            try self.timestamps.add(current_time + self.delay_ms * 1000);
+            r.setStatus(.ok);
+            if (handle_delay) {
+                std.log.debug("Sleeping for {} ms", .{self.delay_ms});
+                var delay_ns: u64 = @intCast(self.delay_ms);
+                delay_ns *= std.time.ns_per_ms;
+                std.time.sleep(delay_ns);
+                // send response
+                try std.json.stringify(.{ .delay_ms = 0 }, .{}, string.writer());
+                return r.sendJson(string.items);
+            } else {
+                // send response
+                try std.json.stringify(.{ .delay_ms = self.delay_ms }, .{}, string.writer());
+                return r.sendJson(string.items);
+            }
+        } else {
+            // we need to work out when we can make a request again
+        }
+    }
 }
 
 fn post(e: *zap.SimpleEndpoint, r: zap.SimpleRequest) void {
@@ -140,7 +186,7 @@ fn set_rate_limit(self: *Self, r: zap.SimpleRequest) !void {
     if (r.body) |body| {
         const JsonSchema = struct {
             new_limit: ?usize = null,
-            new_delay: ?usize = null,
+            new_delay: ?i64 = null,
         };
         var parsed = try self.allocator.create(std.json.Parsed(JsonSchema));
         parsed.* = try std.json.parseFromSlice(JsonSchema, self.allocator, body, .{});
@@ -153,7 +199,7 @@ fn set_rate_limit(self: *Self, r: zap.SimpleRequest) !void {
 
         const Response = struct {
             new_rate_limit: ?usize = null,
-            new_delay: ?usize = null,
+            new_delay: ?i64 = null,
         };
 
         var response = Response{};
