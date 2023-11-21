@@ -57,7 +57,7 @@ fn unauthorized(e: *zap.SimpleEndpoint, r: zap.SimpleRequest) void {
     std.log.warn("UNAUTHORIZED", .{});
     r.setStatus(.unauthorized);
     const msg =
-        \\{{ "status": "error", "error": "unauthorized" }}
+        \\{{ "success": false, "status": "error", "error": "unauthorized" }}
     ;
     r.sendJson(msg) catch |err| {
         std.log.err("Error sending JSON error message `{s}`: {any}", .{ msg, err });
@@ -96,9 +96,10 @@ fn getRateLimit(self: *Self, r: zap.SimpleRequest) !void {
     var string = std.ArrayList(u8).init(fba.allocator());
 
     {
+        // --- PARAM LOCK ---
         self.params_mutex.lock();
         defer self.params_mutex.unlock();
-        try std.json.stringify(.{ .current_rate_limit = self.rate_limit, .delay_ms = self.delay_ms }, .{}, string.writer());
+        try std.json.stringify(.{ .success = true, .current_rate_limit = self.rate_limit, .delay_ms = self.delay_ms }, .{}, string.writer());
     }
     return r.sendJson(string.items);
 }
@@ -141,17 +142,43 @@ fn set_rate_limit(self: *Self, r: zap.SimpleRequest) !void {
             new_limit: ?usize = null,
             new_delay: ?usize = null,
         };
-
-        // second, validate param ranges
         var parsed = try self.allocator.create(std.json.Parsed(JsonSchema));
         parsed.* = try std.json.parseFromSlice(JsonSchema, self.allocator, body, .{});
         std.log.debug("Parsed json: {}", .{parsed.value});
 
+        // second, validate param ranges
+        if (parsed.value.new_limit == null and parsed.value.new_delay == null) {
+            return replyWithError(self.allocator, r, "All values null!");
+        }
+
+        const Response = struct {
+            new_rate_limit: ?usize = null,
+            new_delay: ?usize = null,
+        };
+
+        var response = Response{};
         // third, update paramas
         {
+            // --- PARAM LOCK ---
             self.params_mutex.lock();
             defer self.params_mutex.unlock();
+
+            if (parsed.value.new_limit) |new_limit| {
+                self.rate_limit = new_limit;
+                response.new_rate_limit = new_limit;
+            }
+            if (parsed.value.new_delay) |new_delay| {
+                self.delay_ms = new_delay;
+                response.new_delay = new_delay;
+            }
         }
+
+        // forth, send response
+        var json_buf: [1024]u8 = undefined;
+        var fba = std.heap.FixedBufferAllocator.init(&json_buf);
+        var string = std.ArrayList(u8).init(fba.allocator());
+        try std.json.stringify(response, .{}, string.writer());
+        return r.sendJson(string.items);
     } else {
         // no body
         return replyWithError(self.allocator, r, "Empty body!");

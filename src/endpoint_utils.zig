@@ -3,11 +3,11 @@ const zap = @import("zap");
 
 pub fn replyWithError(alloc: std.mem.Allocator, r: zap.SimpleRequest, error_msg: []const u8) void {
     const msg = std.fmt.allocPrint(alloc,
-        \\{{ "error" : "{s}"}}
+        \\{{ "success": False, "error" : "{s}"}}
     , .{error_msg}) catch {
         // send fixed message that does not need to be allocated
         const fixed_msg =
-            \\{{ "status": "error" }}
+            \\{{ "success": False, "status": "error" }}
         ;
         std.log.err("replyWithError: {s}\n", .{fixed_msg});
         r.sendJson(fixed_msg) catch |err| {
