@@ -47,6 +47,8 @@ pub fn main() !void {
     const port = parseEnvInt(usize, "port", "APIGUARD_PORT", DEFAULT_PORT);
     const initial_limit = parseEnvInt(usize, "API request limit", "APIGUARD_LIMIT", DEFAULT_LIMIT);
     const initial_default_delay_ms = parseEnvInt(usize, "API default delay", "APIGUARD_DELAY", DEFAULT_DELAY_MS);
+
+    // TODO: security risk vs. convenience: should we allow a default token?
     const api_token = std.os.getenv("APIGUARD_AUTH_TOKEN") orelse "renerocksai";
 
     std.debug.print(
