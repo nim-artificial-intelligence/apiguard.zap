@@ -137,6 +137,8 @@ fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
             _ = self.timestamps.removeMin();
         }
 
+        const req_per_min = self.timestamps.count();
+
         if (self.timestamps.count() < self.rate_limit) {
             // we've made less requests than are allowed per minute within the last minute
             try self.timestamps.add(current_time + self.delay_ms * 1000);
@@ -164,21 +166,21 @@ fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
                 //
                 //
                 //
-                try std.json.stringify(.{ .delay_ms = 0 }, .{}, string.writer());
+                try std.json.stringify(.{ .delay_ms = 0, .current_req_per_min = req_per_min }, .{}, string.writer());
                 return r.sendJson(string.items);
             } else {
                 // send response
-                try std.json.stringify(.{ .delay_ms = self.delay_ms }, .{}, string.writer());
+                try std.json.stringify(.{ .delay_ms = self.delay_ms, .current_req_per_min = req_per_min }, .{}, string.writer());
                 return r.sendJson(string.items);
             }
         } else {
             // we need to work out when we can make a request again
             const oldest_request_time = self.timestamps.peekMin().?;
-            const delay_seconds = 60 - (current_time - oldest_request_time);
+            var delay_ms = 60 * std.time.ms_per_s - (current_time - oldest_request_time);
             // TODO: reason why we subtract here:
-            var delay_ms = delay_seconds * 1000 - self.delay_ms;
+            delay_ms -= self.delay_ms;
             if (delay_ms < 0) delay_ms = self.delay_ms;
-            try self.timestamps.add(current_time + @divTrunc(delay_ms, 1000));
+            try self.timestamps.add(current_time + delay_ms);
             r.setStatus(.ok);
             if (handle_delay) {
                 std.log.debug("Sleeping for {} ms", .{delay_ms});
@@ -195,11 +197,11 @@ fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
                 }
 
                 // send response
-                try std.json.stringify(.{ .delay_ms = 0 }, .{}, string.writer());
+                try std.json.stringify(.{ .delay_ms = 0, .current_req_per_min = req_per_min }, .{}, string.writer());
                 return r.sendJson(string.items);
             } else {
                 // send response
-                try std.json.stringify(.{ .delay_ms = delay_ms }, .{}, string.writer());
+                try std.json.stringify(.{ .delay_ms = delay_ms, .current_req_per_min = req_per_min }, .{}, string.writer());
                 return r.sendJson(string.items);
             }
         }
