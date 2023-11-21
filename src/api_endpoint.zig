@@ -145,7 +145,16 @@ fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
                 std.log.debug("Sleeping for {} ms", .{self.delay_ms});
                 var delay_ns: u64 = @intCast(self.delay_ms);
                 delay_ns *= std.time.ns_per_ms;
-                std.time.sleep(delay_ns);
+
+                {
+                    // we sleep locked so we serialize all sleeps so our algo can rely on
+                    // all requests to the API having been done sequentially
+                    // TODO: demonstrate if or that this always works out well in parallel scenarios
+                    self.delay_mutex.lock();
+                    defer self.delay_mutex.unlock();
+                    std.time.sleep(delay_ns);
+                }
+
                 // send response
                 try std.json.stringify(.{ .delay_ms = 0 }, .{}, string.writer());
                 return r.sendJson(string.items);
@@ -156,6 +165,35 @@ fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
             }
         } else {
             // we need to work out when we can make a request again
+            const oldest_request_time = self.timestamps.peekMin().?;
+            const delay_seconds = 60 - (current_time - oldest_request_time);
+            // TODO: reason why we subtract here:
+            var delay_ms = delay_seconds * 1000 - self.delay_ms;
+            if (delay_ms < 0) delay_ms = self.delay_ms;
+            try self.timestamps.add(current_time + @divTrunc(delay_ms, 1000));
+            r.setStatus(.ok);
+            if (handle_delay) {
+                std.log.debug("Sleeping for {} ms", .{delay_ms});
+                var delay_ns: u64 = @intCast(delay_ms);
+                delay_ns *= std.time.ns_per_ms;
+
+                {
+                    // we sleep locked so we serialize all sleeps so our algo can rely on
+                    // all requests to the API having been done sequentially
+                    // TODO: demonstrate if or that this always works out well in parallel scenarios
+                    self.delay_mutex.lock();
+                    defer self.delay_mutex.unlock();
+                    std.time.sleep(delay_ns);
+                }
+
+                // send response
+                try std.json.stringify(.{ .delay_ms = 0 }, .{}, string.writer());
+                return r.sendJson(string.items);
+            } else {
+                // send response
+                try std.json.stringify(.{ .delay_ms = delay_ms }, .{}, string.writer());
+                return r.sendJson(string.items);
+            }
         }
     }
 }
@@ -214,6 +252,9 @@ fn set_rate_limit(self: *Self, r: zap.SimpleRequest) !void {
                 response.new_rate_limit = new_limit;
             }
             if (parsed.value.new_delay) |new_delay| {
+                if (new_delay < 0) {
+                    return replyWithError(self.allocator, r, "delay must be positive!");
+                }
                 self.delay_ms = new_delay;
                 response.new_delay = new_delay;
             }
