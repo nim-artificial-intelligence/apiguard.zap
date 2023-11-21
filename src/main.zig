@@ -9,6 +9,8 @@ const DEFAULT_SLUG = "/apiguard";
 const DEFAULT_PORT: usize = 5501;
 const DEFAULT_LIMIT: usize = 500;
 const DEFAULT_DELAY_MS: usize = 30;
+
+// TODO: security risk vs. convenience: should we allow a default token?
 const DEFAULT_AUTH_TOKEN: []const u8 = "renerocksai";
 
 // issue a 404 by default
@@ -48,7 +50,6 @@ pub fn main() !void {
     const initial_limit = parseEnvInt(usize, "API request limit", "APIGUARD_LIMIT", DEFAULT_LIMIT);
     const initial_default_delay_ms = parseEnvInt(usize, "API default delay", "APIGUARD_DELAY", DEFAULT_DELAY_MS);
 
-    // TODO: security risk vs. convenience: should we allow a default token?
     const api_token = std.os.getenv("APIGUARD_AUTH_TOKEN") orelse "renerocksai";
 
     std.debug.print(
@@ -76,7 +77,7 @@ pub fn main() !void {
 
     // Serves a JSON API
     //
-    var api_endpoint = ApiEndpoint.init(allocator, slug);
+    var api_endpoint = ApiEndpoint.init(allocator, slug, initial_limit, initial_default_delay_ms);
 
     // create authenticator
     const Authenticator = zap.BearerAuthSingle;

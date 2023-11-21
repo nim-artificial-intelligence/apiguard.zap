@@ -17,14 +17,18 @@ timestamps_mutex: std.Thread.Mutex = .{},
 delay_mutex: std.Thread.Mutex = .{},
 endpoint: zap.SimpleEndpoint,
 slug: []const u8,
+rate_limit: usize,
+delay_ms: usize,
 
 const Self = @This();
 
-pub fn init(alloc: std.mem.Allocator, slug: []const u8) Self {
+pub fn init(alloc: std.mem.Allocator, slug: []const u8, rate_limit: usize, delay_ms: usize) Self {
     return .{
         .allocator = alloc,
         .timestamps = Deque.init(alloc, {}),
         .slug = slug, // we don't take a copy!
+        .rate_limit = rate_limit,
+        .delay_ms = delay_ms,
         .endpoint = zap.SimpleEndpoint.init(.{
             .path = slug,
             .get = get,
@@ -69,8 +73,22 @@ fn getInternal(self: *Self, r: zap.SimpleRequest) !void {
         if (std.mem.eql(u8, local_path, "/request_access")) {
             return self.requestAccess(r);
         }
+
+        if (std.mem.eql(u8, local_path, "/get_rate_limit")) {
+            return self.getRateLimit(r);
+        }
     }
     return error.NoSuchEndpoint;
+}
+
+fn getRateLimit(self: *Self, r: zap.SimpleRequest) !void {
+    r.setStatus(.ok);
+    var json_buf: [1024]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&json_buf);
+    var string = std.ArrayList(u8).init(fba.allocator());
+
+    try std.json.stringify(.{ .current_rate_limit = self.rate_limit, .delay_ms = self.delay_ms }, .{}, string.writer());
+    return r.sendJson(string.items);
 }
 
 fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
