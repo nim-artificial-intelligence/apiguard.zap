@@ -37,6 +37,9 @@
           nativeBuildInputs = with pkgs; [
             zigpkgs."0.11.0"
             zon2nix
+            python3
+            python3Packages.matplotlib
+            python3Packages.numpy
           ];
 
           buildInputs = with pkgs; [
@@ -63,14 +66,14 @@
             export XDG_CONFIG_HOME=''${XDG_CONFIG_HOME:-/tmp}
 
             # Define the path to the .env file
-            ENV_PATH="''${XDG_CONFIG_HOME}/apiguard/env"
+            ENV_PATH="''${XDG_CONFIG_HOME}/api_guard/api_guard.rc"
 
             # Load .env file from the specified path
             if [ -f "$ENV_PATH" ]; then
                 export $(${pkgs.busybox}/bin/cat "$ENV_PATH" | ${pkgs.busybox}/bin/grep -v '^#' | ${pkgs.busybox}/bin/xargs)
             else
                 # DOCKER 
-                export $(${pkgs.busybox}/bin/cat "/tmp/apiguard/env" | ${pkgs.busybox}/bin/grep -v '^#' | ${pkgs.busybox}/bin/xargs)
+                export $(${pkgs.busybox}/bin/cat "/tmp/api_guard/api_guard.rc" | ${pkgs.busybox}/bin/grep -v '^#' | ${pkgs.busybox}/bin/xargs)
             fi
 
             # start the server
@@ -79,11 +82,13 @@
             ${packages.apiguard}/bin/apiguard
         '';
 
+        packages.default = packages.apiguard-run;
+
         packages.apiguard = pkgs.stdenvNoCC.mkDerivation rec {
           name = "apiguard";
           version = "master";
           src = ./.;
-          buildInputs = [ pkgs.zigpkgs."0.11.0" pkgs.bun ];
+          buildInputs = [ pkgs.zigpkgs."0.11.0" ];
           dontConfigure = true;
           dontInstall = true;
 
@@ -98,20 +103,15 @@
             mkdir -p .cache/{p,z,tmp}
             # ReleaseSafe CPU:baseline (runs on all machines) MUSL 
             zig build install --cache-dir $(pwd)/zig-cache --global-cache-dir $(pwd)/.cache -Doptimize=ReleaseSafe -Dcpu=baseline -Dtarget=x86_64-linux-musl --prefix $out
-            cp -pr surveyseed.app $out/bin/
-            cp -pr surveyseed.admin $out/bin/
-            cp -pr experiments $out/bin/
             '';
         };
 
         # Usage:
-        #    Prepare the env file as for surveyseed_docker and use:
-        #    ZAP_EXPERIMENTS_DIR=/tmp/experiments # -> rundir/experiments
-        #    ZAP_ADMIN_CREDS=/tmp/passwords.txt # -> rundir/passwords.txt
+        #    Prepare the env file as for apiguard_docker and use:
         #
         #    nix build .#apiguard_docker
         #    docker load < result
-        #    docker run -p5555:5555 -v $(realpath rundir):/tmp seedserver:lastest
+        #    docker run -p5500:5500 -v $(realpath rundir):/tmp apiguard:lastest
         #
         packages.apiguard_docker = pkgs.dockerTools.buildImage { # helper to build Docker image
           name = "apiguard";                          # give docker image a name
@@ -133,7 +133,7 @@
                 "/tmp" = { }; 
             };
             ExposedPorts = {
-              "5501/tcp" = {};
+              "5500/tcp" = {};
             };
 
           };

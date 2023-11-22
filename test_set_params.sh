@@ -7,5 +7,5 @@ curl \
     -d '{"new_limit":100, "new_delay":50}'              \
     -H "Authorization: Bearer $AUTH_TOKEN"              \
     -H "Content-Type: application/json"                 \
-    http://localhost:5501/apiguard/set_rate_limit
+    http://localhost:5500/api_guard/set_rate_limit
 

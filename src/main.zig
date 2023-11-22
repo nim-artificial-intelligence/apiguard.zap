@@ -4,11 +4,10 @@ const ApiEndpoint = @import("api_endpoint.zig");
 
 const is_debug_build = @import("builtin").mode == std.builtin.Mode.Debug;
 
-// const FRONTEND_SLUG = "/frontend";
-const DEFAULT_SLUG = "/apiguard";
-const DEFAULT_PORT: usize = 5501;
-const DEFAULT_LIMIT: usize = 500;
-const DEFAULT_DELAY_MS: usize = 30;
+const DEFAULT_SLUG = "/api_guard";
+const DEFAULT_PORT: usize = 5500;
+const DEFAULT_LIMIT: i64 = 500;
+const DEFAULT_DELAY_MS: i64 = 30;
 
 // TODO: security risk vs. convenience: should we allow a default token?
 const DEFAULT_AUTH_TOKEN: []const u8 = "renerocksai";
@@ -45,9 +44,9 @@ pub fn main() !void {
         zap.Log.fio_set_log_level(zap.Log.fio_log_level_debug);
     }
 
-    const slug = std.os.getenv("APIGUARD_SLUG") orelse "/apiguard";
+    const slug = std.os.getenv("APIGUARD_SLUG") orelse "/api_guard";
     const port = parseEnvInt(usize, "port", "APIGUARD_PORT", DEFAULT_PORT);
-    const initial_limit = parseEnvInt(usize, "API request limit", "APIGUARD_LIMIT", DEFAULT_LIMIT);
+    const initial_limit = parseEnvInt(i64, "API request limit", "APIGUARD_RATE_LIMIT", DEFAULT_LIMIT);
     const initial_default_delay_ms = parseEnvInt(i64, "API default delay", "APIGUARD_DELAY", DEFAULT_DELAY_MS);
 
     const api_token = std.os.getenv("APIGUARD_AUTH_TOKEN") orelse "renerocksai";

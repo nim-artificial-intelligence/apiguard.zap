@@ -22,12 +22,12 @@ params_mutex: std.Thread.Mutex = .{},
 
 endpoint: zap.SimpleEndpoint,
 slug: []const u8,
-rate_limit: usize,
+rate_limit: i64,
 delay_ms: i64,
 
 const Self = @This();
 
-pub fn init(alloc: std.mem.Allocator, slug: []const u8, rate_limit: usize, delay_ms: i64) Self {
+pub fn init(alloc: std.mem.Allocator, slug: []const u8, rate_limit: i64, delay_ms: i64) Self {
     return .{
         .allocator = alloc,
         .timestamps = Deque.init(alloc, {}),
@@ -73,7 +73,6 @@ fn get(e: *zap.SimpleEndpoint, r: zap.SimpleRequest) void {
 fn getInternal(self: *Self, r: zap.SimpleRequest) !void {
     if (r.path) |p| {
         const local_path = p[(self.slug.len)..];
-        std.debug.print("LOCAL PATH IS {s}\n ", .{local_path});
 
         if (std.mem.eql(u8, local_path, "/request_access")) {
             return self.requestAccess(r);
@@ -133,29 +132,32 @@ fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
             _ = self.timestamps.removeMin();
         }
 
-        const req_per_min = self.timestamps.count();
+        const req_per_min: i64 = @intCast(self.timestamps.count());
+        var delay_ms = self.delay_ms;
 
-        // now
+        if (self.adjust_delay_under_load(current_time_ms)) |adjusted_delay| {
+            delay_ms = adjusted_delay;
+        }
 
         if (self.timestamps.count() < self.rate_limit) {
             // we've made less requests than are allowed per minute within the last minute
             // so we don't need to delay. we will delay for the default delay in that case
-            try self.timestamps.add(current_time_ms + self.delay_ms); // add the time in the future when this request won't count anymore: after the delay
+            try self.timestamps.add(current_time_ms + delay_ms); // add the time in the future when this request won't count anymore: after the delay
             r.setStatus(.ok);
             if (handle_delay) {
-                std.log.debug("Sleeping for {} ms", .{self.delay_ms});
-                var delay_ns: u64 = @intCast(self.delay_ms);
+                std.log.debug("Sleeping for {} ms", .{delay_ms});
+                var delay_ns: u64 = @intCast(delay_ms);
                 delay_ns *= std.time.ns_per_ms;
 
                 // TODO: demonstrate if or that this always works out well in parallel scenarios
                 std.time.sleep(delay_ns);
 
                 // send response
-                try std.json.stringify(.{ .delay_ms = 0, .current_req_per_min = req_per_min }, .{}, string.writer());
+                try std.json.stringify(.{ .delay_ms = 0, .current_req_per_min = req_per_min, .server_side_delay = delay_ms }, .{}, string.writer());
                 return r.sendJson(string.items);
             } else {
                 // send response
-                try std.json.stringify(.{ .delay_ms = self.delay_ms, .current_req_per_min = req_per_min }, .{}, string.writer());
+                try std.json.stringify(.{ .delay_ms = delay_ms, .current_req_per_min = req_per_min, .server_side_delay = 0 }, .{}, string.writer());
                 return r.sendJson(string.items);
             }
         } else {
@@ -163,8 +165,13 @@ fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
             const oldest_request_time_ms = self.timestamps.peekMin().?;
 
             // calculate the delay:
-            var delay_ms = 60 * std.time.ms_per_s - (current_time_ms - oldest_request_time_ms);
-            if (delay_ms < 0) delay_ms = self.delay_ms;
+            delay_ms = 60 * std.time.ms_per_s - (current_time_ms - oldest_request_time_ms);
+            if (delay_ms < self.delay_ms) delay_ms = self.delay_ms;
+
+            if (self.adjust_delay_under_load(current_time_ms)) |adjusted_delay| {
+                delay_ms = adjusted_delay;
+            }
+
             try self.timestamps.add(current_time_ms + delay_ms);
             r.setStatus(.ok);
             if (handle_delay) {
@@ -176,11 +183,11 @@ fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
                 std.time.sleep(delay_ns);
 
                 // send response
-                try std.json.stringify(.{ .delay_ms = 0, .current_req_per_min = req_per_min }, .{}, string.writer());
+                try std.json.stringify(.{ .delay_ms = 0, .current_req_per_min = req_per_min, .server_side_delay = delay_ms }, .{}, string.writer());
                 return r.sendJson(string.items);
             } else {
                 // send response
-                try std.json.stringify(.{ .delay_ms = delay_ms, .current_req_per_min = req_per_min }, .{}, string.writer());
+                try std.json.stringify(.{ .delay_ms = delay_ms, .current_req_per_min = req_per_min, .server_side_delay = 0 }, .{}, string.writer());
                 return r.sendJson(string.items);
             }
         }
@@ -199,7 +206,6 @@ fn post(e: *zap.SimpleEndpoint, r: zap.SimpleRequest) void {
 fn postInternal(self: *Self, r: zap.SimpleRequest) !void {
     if (r.path) |p| {
         const local_path = p[(self.slug.len)..];
-        std.debug.print("LOCAL PATH IS {s}\n ", .{local_path});
 
         if (std.mem.eql(u8, local_path, "/set_rate_limit")) {
             return self.set_rate_limit(r);
@@ -212,7 +218,7 @@ fn set_rate_limit(self: *Self, r: zap.SimpleRequest) !void {
     // first, parse the params out of the request
     if (r.body) |body| {
         const JsonSchema = struct {
-            new_limit: ?usize = null,
+            new_limit: ?i64 = null,
             new_delay: ?i64 = null,
         };
         var parsed = try self.allocator.create(std.json.Parsed(JsonSchema));
@@ -225,7 +231,7 @@ fn set_rate_limit(self: *Self, r: zap.SimpleRequest) !void {
         }
 
         const Response = struct {
-            new_rate_limit: ?usize = null,
+            new_rate_limit: ?i64 = null,
             new_delay: ?i64 = null,
         };
 
@@ -237,6 +243,9 @@ fn set_rate_limit(self: *Self, r: zap.SimpleRequest) !void {
             defer self.params_mutex.unlock();
 
             if (parsed.value.new_limit) |new_limit| {
+                if (new_limit < 0) {
+                    return replyWithError(self.allocator, r, "limit must be positive!");
+                }
                 self.rate_limit = new_limit;
                 response.new_rate_limit = new_limit;
             }
@@ -259,4 +268,42 @@ fn set_rate_limit(self: *Self, r: zap.SimpleRequest) !void {
         // no body
         return replyWithError(self.allocator, r, "Empty body!");
     }
+}
+
+/// now check if we need to adjust the delay
+/// our first thing is:
+/// if we're > 75% of limit:
+/// num_remaining_requests: limit - current_number_of_requ_per_min
+/// num_remaining_milliseconds_in_second: current_time_ms - self.timestamps.peekMin().?
+/// divide num_remaining_milliseconds_in_second / num_remaining_requests
+fn adjust_delay_under_load(self: *Self, current_time_ms: i64) ?i64 {
+    const current_req_per_min: i64 = @intCast(self.timestamps.count());
+
+    const Escalation = struct {
+        at_percent_of_limit: u8,
+        factor_of_delay: i64,
+    };
+    const escalations = [_]Escalation{
+        // .{ .at_percent_of_limit = 75, .factor_of_delay = 100 },
+        // .{ .at_percent_of_limit = 50, .factor_of_delay = 105 },
+        .{ .at_percent_of_limit = 75, .factor_of_delay = 100 },
+        .{ .at_percent_of_limit = 50, .factor_of_delay = 75 },
+        .{ .at_percent_of_limit = 25, .factor_of_delay = 50 },
+        .{ .at_percent_of_limit = 10, .factor_of_delay = 25 },
+    };
+    for (escalations) |escalation| {
+        if (current_req_per_min > @divTrunc(self.rate_limit * escalation.at_percent_of_limit, 100)) {
+            // we need to become more aggressive with delays
+            const num_remaining_requests = self.rate_limit - current_req_per_min;
+            const num_remaining_milliseconds_in_minute = 60 * std.time.ms_per_s - (current_time_ms - self.timestamps.peekMin().?);
+            var delay_ms = @divTrunc(@divTrunc(num_remaining_milliseconds_in_minute, num_remaining_requests) * escalation.factor_of_delay, 100) + 1;
+
+            std.log.debug("\n\n\nHIT {} --> {}\n\n\n", .{ escalation, delay_ms });
+
+            // just to be sure
+            if (delay_ms < self.delay_ms) delay_ms = self.delay_ms;
+            return delay_ms;
+        }
+    }
+    return null;
 }
