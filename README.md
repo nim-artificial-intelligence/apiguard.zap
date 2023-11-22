@@ -40,11 +40,11 @@ Here is its behavior with the default configuration:
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/nim-artificial-intelligence/apiguard.git
+   git clone https://github.com/nim-artificial-intelligence/apiguard.zap.git
    ```
 2. Navigate to the project directory:
    ```bash
-   cd apiguard
+   cd apiguard.zap
    ```
 
 ### Configuration
@@ -52,7 +52,7 @@ Here is its behavior with the default configuration:
 1. Create a `api_guard.rc` file at `${XDG_CONFIG_HOME}/api_guard/api_guard.rc` (which usually is: `~/.config/api_guard/api_guard.rc`) with the following content:
    ```
    APIGUARD_RATE_LIMIT=500
-   APIGUARD_PORT=5000
+   APIGUARD_PORT=5500
    APIGUARD_AUTH_TOKEN=YourSecretAuthToken
    APIGUARD_SLUG=/api_guard
    APIGUARD_DELAY=30
@@ -71,9 +71,17 @@ Here is its behavior with the default configuration:
 
 ### Building and running the Service
 
-Execute the following command to start the server:
+Execute the following command to build the server:
 ```bash
 zig build
+```
+
+Start it via:
+
+```bash
+# export rc file
+export $(cat "$XDG_CONFIG_HOME/api_guard/api_guard.rc" | grep -v '^#' | xargs)
+./zig-out/bin/apiguard # to start the server
 ```
 
 Test it via:
@@ -81,9 +89,7 @@ Test it via:
 ```bash
 # export rc file
 export $(cat "$XDG_CONFIG_HOME/api_guard/api_guard.rc" | grep -v '^#' | xargs)
-./zig-out/bin/apiguard
-
-# run a simple request
+# run a simple request in another shell:
 curl http://127.0.0.1:${APIGUARD_PORT}${APIGUARD_SLUG}/request_access
 ```
 
@@ -103,19 +109,16 @@ Put these commands in a launcher script:
 # export rc file
 export $(cat "$XDG_CONFIG_HOME/api_guard/api_guard.rc" | grep -v '^#' | xargs)
 ./zig-out/bin/apiguard 2>&1 | tee -a logfile
+```
 
+Test it via:
+
+```bash
+# export api_guard.rc file
+export $(cat "$XDG_CONFIG_HOME/api_guard/api_guard.rc" | grep -v '^#' | xargs)
 # run a simple request
 curl http://127.0.0.1:${APIGUARD_PORT}${APIGUARD_SLUG}/request_access
 ```
-
-
-3. Test it via:
-    ```bash
-    # export .env file
-    export $(cat "$XDG_CONFIG_HOME/api_guard/.env" | grep -v '^#' | xargs)
-    # run a simple request
-    curl http://127.0.0.1:${APIGUARD_PORT}${APIGUARD_SLUG}/request_access
-    ```
 
 ### Running the Service via Docker Container
 
@@ -127,11 +130,10 @@ curl http://127.0.0.1:${APIGUARD_PORT}${APIGUARD_SLUG}/request_access
     # or, if you build it with nix:
     docker load < result
     ```
-3. Create an .env file, see [configuration](#configuration) and set its PORT to
-   5000. That port is just used inside the container:
+3. Create an api_guard.rc file, see [configuration](#configuration) and set its PORT to
+   5500. That port is just used inside the container:
    ```
-   PORT=5000
-   LOGDIR=/tmp
+   PORT=5500
    ```
 
 4. Create a run directory and move the rc file there:
@@ -146,7 +148,7 @@ curl http://127.0.0.1:${APIGUARD_PORT}${APIGUARD_SLUG}/request_access
 
 6. Test it via:
     ```bash
-    # export .env file
+    # export api_guard.rc file
     export $(cat "$XDG_CONFIG_HOME/api_guard/api_guard.rc" | grep -v '^#' | xargs)
     # run a simple request
     curl http://127.0.0.1:${APIGUARD_PORT}${APIGUARD_SLUG}/request_access
@@ -173,12 +175,12 @@ curl http://127.0.0.1:${APIGUARD_PORT}${APIGUARD_SLUG}/request_access
   - **Response**:
     - Returns a JSON object with 
         - `current_rate_limit` showing the current rate limit value (number of requests allowed per 60 seconds).
-        - `default_delay` showing the current default delay in ms.
+        - `delay_ms` showing the current default delay in ms.
   - **Example**: 
     - [`AUTH_TOKEN=YOUR_TOKEN ./test_get_params.sh`](./test_get_params.sh): how to retrieve values via `/get_rate_limit`
 
 - **POST /set_rate_limit**
-  - JSON Params: `new_limit` (integer), `default_delay` (integer) in milliseconds
+  - JSON Params: `new_limit` (integer), `new_delay` (integer) in milliseconds
   - Headers: `Authorization: [Auth Token]`
   - Description: Update the rate limit to a new value.
   - **Response**:
@@ -228,23 +230,23 @@ Please see the examples:
 #### /request_access
 - Success (with delay):
   ```json
-  { "delay_ms": 500 }
+  {"delay_ms":0,"current_req_per_min":499,"server_side_delay":169
   ```
 - Success (without delay):
   ```json
-  { "delay_ms": 0 }
+  {"delay_ms":169,"current_req_per_min":499,"server_side_delay":0
   ```
 
 #### /get_rate_limit
 - Success:
   ```json
-  { "current_rate_limit": 60, "default_delay": 30 }
+  { "current_rate_limit": 60, "delay_ms": 30 }
   ```
 
 #### /set_rate_limit
 - Success:
   ```json
-  { "success": true, "new_rate_limit": 80, "new_default_delay": 45 }
+  { "success": true, "new_rate_limit": 80, "new_delay": 45 }
   ```
 - Failure:
   ```json
