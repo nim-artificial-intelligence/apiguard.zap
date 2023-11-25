@@ -13,6 +13,8 @@ const ServerResponse = struct {
 
 const Transaction = struct {
     sequence_number: usize,
+    thread_id: usize,
+    thread_sequence_number: usize,
     request_timestamp_ms: isize,
     request: ClientRequest,
     response_timestamp_ms: ?isize = null,
@@ -38,7 +40,7 @@ const TransactionLog = struct {
         self.transactions.deinit();
     }
 
-    pub fn newTransaction(self: *Self, url: []const u8) !Transaction {
+    pub fn newTransaction(self: *Self, url: []const u8, thread_id: usize, thread_sequence_number: usize) !Transaction {
         {
             self.transaction_lock.lock();
             defer self.transaction_lock.unlock();
@@ -58,6 +60,8 @@ const TransactionLog = struct {
         };
         return Transaction{
             .sequence_number = self._current_sequence_number,
+            .thread_id = thread_id,
+            .thread_sequence_number = thread_sequence_number,
             .request_timestamp_ms = std.time.milliTimestamp(),
             .request = ClientRequest{ .uri = uri, .handle_delay = handle_delay },
         };
@@ -70,48 +74,53 @@ const TransactionLog = struct {
     }
 };
 
-fn makeRequest(a: std.mem.Allocator, url: []const u8, auth_bearer: []const u8, transaction_log: *TransactionLog) !void {
-    var transaction = try transaction_log.newTransaction(url);
+fn makeRequests(a: std.mem.Allocator, thread_id: usize, howmany: usize, url: []const u8, auth_bearer: []const u8, transaction_log: *TransactionLog) !void {
+    var thread_sequence_number: usize = 0;
 
     var h = std.http.Headers{ .allocator = a };
     defer h.deinit();
     try h.append("Authorization", auth_bearer);
 
-    var http_client: std.http.Client = .{ .allocator = a };
-    defer http_client.deinit();
+    while (thread_sequence_number < howmany) : (thread_sequence_number += 1) {
+        var transaction = try transaction_log.newTransaction(url, thread_id, thread_sequence_number);
 
-    var req = try http_client.request(.GET, transaction.request.uri, h, .{});
-    defer req.deinit();
+        var http_client: std.http.Client = .{ .allocator = a };
+        defer http_client.deinit();
 
-    try req.start();
-    try req.wait();
+        var req = try http_client.request(.GET, transaction.request.uri, h, .{});
+        defer req.deinit();
 
-    var buffer: [1024]u8 = undefined;
-    const rsize = try req.readAll(&buffer);
-    transaction.response_timestamp_ms = std.time.milliTimestamp();
+        try req.start();
+        try req.wait();
 
-    const parsed = try std.json.parseFromSlice(ServerResponse, a, buffer[0..rsize], .{});
-    defer parsed.deinit();
-    transaction.response = parsed.value;
-    std.log.debug("{}", .{transaction});
+        var buffer: [1024]u8 = undefined;
+        const rsize = try req.readAll(&buffer);
+        transaction.response_timestamp_ms = std.time.milliTimestamp();
+
+        const parsed = try std.json.parseFromSlice(ServerResponse, a, buffer[0..rsize], .{});
+        defer parsed.deinit();
+        transaction.response = parsed.value;
+
+        try transaction_log.addTransaction(transaction);
+    }
 }
 
-fn makeRequestThread(a: std.mem.Allocator, url: []const u8, auth_bearer: []const u8, tlog: *TransactionLog) !std.Thread {
-    return try std.Thread.spawn(.{}, makeRequest, .{ a, url, auth_bearer, tlog });
+fn makeRequestThread(a: std.mem.Allocator, thread_id: usize, howmany: usize, url: []const u8, auth_bearer: []const u8, tlog: *TransactionLog) !std.Thread {
+    return try std.Thread.spawn(.{}, makeRequests, .{ a, thread_id, howmany, url, auth_bearer, tlog });
 }
 
 pub fn usage() !void {
     const stdout = std.io.getStdOut().writer();
     const progname = "clientbot";
-    try stdout.print("Usage: {s} num-requests base-url auth-token handle_delay outfile\n", .{progname});
+    try stdout.print("Usage: {s} num-threads equests-per-thread url auth-token outfile\n", .{progname});
 }
 
 const Args = struct {
     progname: []const u8 = "clientbot",
-    num_requests: usize = 0,
-    base_url: []const u8 = "",
+    num_threads: usize = 0,
+    num_req_per_thread: usize = 0,
+    url: []const u8 = "",
     auth_bearer: []const u8 = "",
-    handle_delay: bool = false,
     out_file: []const u8 = "",
 };
 
@@ -128,10 +137,10 @@ fn parse_args(a: std.mem.Allocator) !Args {
     var args: Args = .{};
 
     args.progname = try get_next_arg_str(&args_it);
-    args.num_requests = try std.fmt.parseInt(usize, try get_next_arg_str(&args_it), 10);
-    args.base_url = try get_next_arg_str(&args_it);
+    args.num_threads = try std.fmt.parseInt(usize, try get_next_arg_str(&args_it), 10);
+    args.num_req_per_thread = try std.fmt.parseInt(usize, try get_next_arg_str(&args_it), 10);
+    args.url = try get_next_arg_str(&args_it);
     args.auth_bearer = try get_next_arg_str(&args_it);
-    args.handle_delay = std.mem.eql(u8, try get_next_arg_str(&args_it), "true");
     args.out_file = try get_next_arg_str(&args_it);
     return args;
 }
@@ -148,13 +157,50 @@ pub fn main() !void {
         try usage();
         std.os.exit(1);
     };
-    std.debug.print("using args:\n  progname={s}\n  num_requests={d}\n  base_url={s}\n  auth_bearer={s}\n  handle_delay={}\n  out_file={s}\n", .{ args.progname, args.num_requests, args.base_url, args.auth_bearer, args.handle_delay, args.out_file });
+    std.debug.print(
+        \\Using args:
+        \\    progname        : {s}
+        \\    num_threads     : {d}
+        \\    req_per_thread  : {d}
+        \\    url             : {s}
+        \\    auth_bearer     : {s}
+        \\    out_file        : {s}
+        \\
+        \\
+    , .{ args.progname, args.num_threads, args.num_req_per_thread, args.url, args.auth_bearer, args.out_file });
 
     var transaction_log = TransactionLog.init(allocator);
     defer transaction_log.deinit();
 
-    const url = "http://127.0.0.1:5500/api_guard/request_access?handle_delay=true";
-    const auth_bearer = "Bearer renerocksai";
-    const thread = try makeRequestThread(allocator, url, auth_bearer, &transaction_log);
-    defer thread.join();
+    const auth_bearer = try std.fmt.allocPrint(allocator, "Bearer {s}", .{args.auth_bearer});
+    defer allocator.free(auth_bearer);
+
+    var threads = std.ArrayList(std.Thread).init(allocator);
+    for (0..args.num_threads) |i| {
+        const thread = try makeRequestThread(allocator, i, args.num_req_per_thread, args.url, auth_bearer, &transaction_log);
+        threads.append(thread) catch break;
+    }
+
+    while (true) {
+        const progress = blk: {
+            transaction_log.transaction_lock.lock();
+            defer transaction_log.transaction_lock.unlock();
+            break :blk transaction_log._current_sequence_number;
+        };
+        const limit = args.num_req_per_thread * args.num_threads;
+        std.debug.print("Progress: {d:6} / {d:6}\r", .{ progress, limit });
+        if (progress == limit) {
+            std.debug.print("Progress: {d:6} / {d:6}\n", .{ progress, limit });
+            break;
+        }
+        std.time.sleep(200 * std.time.ns_per_ms);
+    }
+    for (threads.items) |t| {
+        t.join();
+    }
+
+    // now print the transaction log
+    for (transaction_log.transactions.items) |transaction| {
+        std.debug.print("{}\n", .{transaction});
+    }
 }
