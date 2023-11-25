@@ -1,37 +1,15 @@
 const std = @import("std");
 const zap = @import("zap");
 const ApiEndpoint = @import("api_endpoint.zig");
+const ServiceConfig = @import("serviceconfig.zig");
 
 const is_debug_build = @import("builtin").mode == std.builtin.Mode.Debug;
-
-const DEFAULT_SLUG = "/api_guard";
-const DEFAULT_PORT: usize = 5500;
-const DEFAULT_LIMIT: i64 = 500;
-const DEFAULT_DELAY_MS: i64 = 30;
-const DEFAULT_WORKERS: i16 = 8;
-
-// TODO: security risk vs. convenience: should we allow a default token?
-const DEFAULT_AUTH_TOKEN: []const u8 = "renerocksai";
 
 // issue a 404 by default
 fn on_default_request(r: zap.SimpleRequest) void {
     r.setStatus(.not_found);
     r.sendJson("{ \"status\": \"not found\"}") catch |err| {
         std.log.err("could not send 404 response: {any}\n", .{err});
-    };
-}
-
-fn parseEnvInt(comptime T: type, what: []const u8, from_env_var: []const u8, default: T) T {
-    return blk: {
-        if (std.os.getenv(from_env_var)) |value_str| {
-            const value = std.fmt.parseInt(T, value_str, 10) catch |err| {
-                std.log.err("Error: could not parse {s} from {s}: `{s}`: {any}", .{ what, from_env_var, value_str, err });
-                std.os.exit(1);
-            };
-            break :blk value;
-        } else {
-            break :blk default;
-        }
     };
 }
 
@@ -45,13 +23,7 @@ pub fn main() !void {
         zap.Log.fio_set_log_level(zap.Log.fio_log_level_debug);
     }
 
-    const slug = std.os.getenv("APIGUARD_SLUG") orelse "/api_guard";
-    const port = parseEnvInt(usize, "port", "APIGUARD_PORT", DEFAULT_PORT);
-    const initial_limit = parseEnvInt(i64, "API request limit", "APIGUARD_RATE_LIMIT", DEFAULT_LIMIT);
-    const initial_default_delay_ms = parseEnvInt(i64, "API default delay", "APIGUARD_DELAY", DEFAULT_DELAY_MS);
-    const num_workers = parseEnvInt(i16, "Number of worker threads", "APIGUARD_NUM_WORKERS", DEFAULT_WORKERS);
-
-    const api_token = std.os.getenv("APIGUARD_AUTH_TOKEN") orelse "renerocksai";
+    const config = ServiceConfig.init();
 
     std.debug.print(
         \\
@@ -67,10 +39,10 @@ pub fn main() !void {
         \\ USING NUM WORKERS  : {d}
         \\
         \\
-    , .{ port, slug, api_token, initial_limit, initial_default_delay_ms, num_workers });
+    , .{ config.port, config.slug, config.api_token, config.initial_limit, config.initial_default_delay_ms, config.num_workers });
 
     var listener = zap.SimpleEndpointListener.init(allocator, .{
-        .port = port,
+        .port = config.port,
         .on_request = on_default_request,
         .max_clients = 1000,
         .max_body_size = 1024, // 1kB for incoming JSON is more than enough
@@ -79,11 +51,11 @@ pub fn main() !void {
 
     // Serves a JSON API
     //
-    var api_endpoint = ApiEndpoint.init(allocator, slug, initial_limit, initial_default_delay_ms);
+    var api_endpoint = ApiEndpoint.init(allocator, config.slug, config.initial_limit, config.initial_default_delay_ms);
 
     // create authenticator
     const Authenticator = zap.BearerAuthSingle;
-    var authenticator = try Authenticator.init(allocator, api_token, null);
+    var authenticator = try Authenticator.init(allocator, config.api_token, null);
     defer authenticator.deinit();
 
     // create authenticating endpoint
@@ -101,7 +73,7 @@ pub fn main() !void {
     // start worker threads
     zap.start(.{
         // yes, we call them workers here for simplicity
-        .threads = num_workers,
+        .threads = config.num_workers,
 
         // IMPORTANT!
         //

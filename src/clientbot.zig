@@ -1,4 +1,5 @@
 const std = @import("std");
+const ServiceConfig = @import("serviceconfig.zig");
 
 const ClientRequest = struct {
     uri: std.Uri,
@@ -112,15 +113,14 @@ fn makeRequestThread(a: std.mem.Allocator, thread_id: usize, howmany: usize, url
 pub fn usage() !void {
     const stdout = std.io.getStdOut().writer();
     const progname = "clientbot";
-    try stdout.print("Usage: {s} num-threads equests-per-thread url auth-token outfile\n", .{progname});
+    try stdout.print("Usage: {s} num-threads requests-per-thread handle_delay outfile\n", .{progname});
 }
 
 const Args = struct {
     progname: []const u8 = "clientbot",
     num_threads: usize = 0,
+    handle_delay: bool = true,
     num_req_per_thread: usize = 0,
-    url: []const u8 = "",
-    auth_bearer: []const u8 = "",
     out_file: []const u8 = "",
 };
 
@@ -139,8 +139,7 @@ fn parse_args(a: std.mem.Allocator) !Args {
     args.progname = try get_next_arg_str(&args_it);
     args.num_threads = try std.fmt.parseInt(usize, try get_next_arg_str(&args_it), 10);
     args.num_req_per_thread = try std.fmt.parseInt(usize, try get_next_arg_str(&args_it), 10);
-    args.url = try get_next_arg_str(&args_it);
-    args.auth_bearer = try get_next_arg_str(&args_it);
+    args.handle_delay = std.mem.eql(u8, try get_next_arg_str(&args_it), "true");
     args.out_file = try get_next_arg_str(&args_it);
     return args;
 }
@@ -158,6 +157,9 @@ pub fn main() !void {
         try usage();
         std.os.exit(1);
     };
+    const scfg = ServiceConfig.init();
+    const url = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}{s}/request_access?handle_delay={}", .{ scfg.port, scfg.slug, args.handle_delay });
+    defer allocator.free(url);
     try stderr.print(
         \\Using args:
         \\    progname        : {s}
@@ -168,17 +170,17 @@ pub fn main() !void {
         \\    out_file        : {s}
         \\
         \\
-    , .{ args.progname, args.num_threads, args.num_req_per_thread, args.url, args.auth_bearer, args.out_file });
+    , .{ args.progname, args.num_threads, args.num_req_per_thread, url, scfg.api_token, args.out_file });
 
     var transaction_log = TransactionLog.init(allocator);
     defer transaction_log.deinit();
 
-    const auth_bearer = try std.fmt.allocPrint(allocator, "Bearer {s}", .{args.auth_bearer});
+    const auth_bearer = try std.fmt.allocPrint(allocator, "Bearer {s}", .{scfg.api_token});
     defer allocator.free(auth_bearer);
 
     var threads = std.ArrayList(std.Thread).init(allocator);
     for (0..args.num_threads) |i| {
-        const thread = try makeRequestThread(allocator, i, args.num_req_per_thread, args.url, auth_bearer, &transaction_log);
+        const thread = try makeRequestThread(allocator, i, args.num_req_per_thread, url, auth_bearer, &transaction_log);
         threads.append(thread) catch break;
     }
 
@@ -200,15 +202,35 @@ pub fn main() !void {
         t.join();
     }
 
-    try saveTransactionLog(args, &transaction_log, args.out_file);
+    try saveTransactionLog(args, &transaction_log, url, args.out_file);
 }
 
-fn saveTransactionLog(args: Args, transaction_log: *TransactionLog, filename: []const u8) !void {
+fn saveTransactionLog(args: Args, transaction_log: *TransactionLog, url: []const u8, filename: []const u8) !void {
+    const scfg = ServiceConfig.init();
+
     var f = try std.fs.cwd().createFile(filename, .{});
     defer f.close();
     var writer = f.writer();
     try writer.print(
         \\{{
+        \\   "apiguard_config": {{
+        \\       "slug": "{s}",
+        \\       "port": {d},
+        \\       "initial_limit": {d},
+        \\       "initial_default_delay": {d},
+        \\       "num_workers": {d},
+        \\       "api_token": "{s}"
+        \\   }},
+    , .{
+        scfg.slug,
+        scfg.port,
+        scfg.initial_limit,
+        scfg.initial_default_delay_ms,
+        scfg.num_workers,
+        scfg.api_token,
+    });
+
+    try writer.print(
         \\   "config" : {{
         \\      "num_threads": {d},
         \\      "req_per_thread": {d},
@@ -218,7 +240,14 @@ fn saveTransactionLog(args: Args, transaction_log: *TransactionLog, filename: []
         \\   }},
         \\   "transactions" : [
         \\
-    , .{ args.num_threads, args.num_req_per_thread, args.url, args.auth_bearer, args.out_file });
+    , .{
+        args.num_threads,
+        args.num_req_per_thread,
+        url,
+        scfg.api_token,
+        args.out_file,
+    });
+
     const num_transactions = transaction_log.transactions.items.len;
     for (transaction_log.transactions.items) |t| {
         const separator = if (t.sequence_number < num_transactions) "," else "";
@@ -253,7 +282,7 @@ fn saveTransactionLog(args: Args, transaction_log: *TransactionLog, filename: []
             \\     }}{s}
             \\
         ,
-            .{ t.sequence_number, t.thread_id, t.thread_sequence_number, t.request_timestamp_ms, t.response_timestamp_ms, args.url, t.request.handle_delay, response.delay_ms, response.current_req_per_min, response.server_side_delay, separator },
+            .{ t.sequence_number, t.thread_id, t.thread_sequence_number, t.request_timestamp_ms, t.response_timestamp_ms, url, t.request.handle_delay, response.delay_ms, response.current_req_per_min, response.server_side_delay, separator },
         );
     }
     try writer.print(
