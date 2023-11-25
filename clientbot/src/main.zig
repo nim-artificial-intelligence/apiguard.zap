@@ -34,6 +34,10 @@ const TransactionLog = struct {
         };
     }
 
+    pub fn deinit(self: *Self) void {
+        self.transactions.deinit();
+    }
+
     pub fn newTransaction(self: *Self, url: []const u8) !Transaction {
         {
             self.transaction_lock.lock();
@@ -96,13 +100,58 @@ fn makeRequestThread(a: std.mem.Allocator, url: []const u8, auth_bearer: []const
     return try std.Thread.spawn(.{}, makeRequest, .{ a, url, auth_bearer, tlog });
 }
 
+pub fn usage() !void {
+    const stdout = std.io.getStdOut().writer();
+    const progname = "clientbot";
+    try stdout.print("Usage: {s} num-requests base-url auth-token handle_delay outfile\n", .{progname});
+}
+
+const Args = struct {
+    progname: []const u8 = "clientbot",
+    num_requests: usize = 0,
+    base_url: []const u8 = "",
+    auth_bearer: []const u8 = "",
+    handle_delay: bool = false,
+    out_file: []const u8 = "",
+};
+
+fn get_next_arg_str(it: *std.process.ArgIterator) ![]const u8 {
+    if (it.next()) |val| {
+        return val;
+    } else {
+        return error.NotEnoughArgs;
+    }
+}
+
+fn parse_args(a: std.mem.Allocator) !Args {
+    var args_it = try std.process.argsWithAllocator(a);
+    var args: Args = .{};
+
+    args.progname = try get_next_arg_str(&args_it);
+    args.num_requests = try std.fmt.parseInt(usize, try get_next_arg_str(&args_it), 10);
+    args.base_url = try get_next_arg_str(&args_it);
+    args.auth_bearer = try get_next_arg_str(&args_it);
+    args.handle_delay = std.mem.eql(u8, try get_next_arg_str(&args_it), "true");
+    args.out_file = try get_next_arg_str(&args_it);
+    return args;
+}
+
 // here we go
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{
         .thread_safe = true,
     }){};
     var allocator = gpa.allocator();
+
+    // parse args or show usage
+    const args = parse_args(allocator) catch {
+        try usage();
+        std.os.exit(1);
+    };
+    std.debug.print("using args:\n  progname={s}\n  num_requests={d}\n  base_url={s}\n  auth_bearer={s}\n  handle_delay={}\n  out_file={s}\n", .{ args.progname, args.num_requests, args.base_url, args.auth_bearer, args.handle_delay, args.out_file });
+
     var transaction_log = TransactionLog.init(allocator);
+    defer transaction_log.deinit();
 
     const url = "http://127.0.0.1:5500/api_guard/request_access?handle_delay=true";
     const auth_bearer = "Bearer renerocksai";
