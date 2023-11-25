@@ -151,13 +151,14 @@ pub fn main() !void {
         .thread_safe = true,
     }){};
     var allocator = gpa.allocator();
+    const stderr = std.io.getStdErr().writer();
 
     // parse args or show usage
     const args = parse_args(allocator) catch {
         try usage();
         std.os.exit(1);
     };
-    std.debug.print(
+    try stderr.print(
         \\Using args:
         \\    progname        : {s}
         \\    num_threads     : {d}
@@ -188,9 +189,9 @@ pub fn main() !void {
             break :blk transaction_log._current_sequence_number;
         };
         const limit = args.num_req_per_thread * args.num_threads;
-        std.debug.print("Progress: {d:6} / {d:6}\r", .{ progress, limit });
+        try stderr.print("Progress: {d:6} / {d:6}\r", .{ progress, limit });
         if (progress == limit) {
-            std.debug.print("Progress: {d:6} / {d:6}\n", .{ progress, limit });
+            try stderr.print("Progress: {d:6} / {d:6}\n", .{ progress, limit });
             break;
         }
         std.time.sleep(200 * std.time.ns_per_ms);
@@ -199,10 +200,6 @@ pub fn main() !void {
         t.join();
     }
 
-    // now print the transaction log
-    for (transaction_log.transactions.items) |transaction| {
-        std.debug.print("{}\n", .{transaction});
-    }
     try saveTransactionLog(args, &transaction_log, args.out_file);
 }
 
