@@ -56,6 +56,7 @@ Here is its behavior with the default configuration:
    APIGUARD_AUTH_TOKEN=YourSecretAuthToken
    APIGUARD_SLUG=/api_guard
    APIGUARD_DELAY=30
+   APIGUARD_NUM_WORKERS=8
    ```
    Note: 
    - the slug parameter is to add a prefix to the URL and is optional. If
@@ -65,6 +66,10 @@ Here is its behavior with the default configuration:
    api_guard for different APIs.
    - the `APIGUARD_DELAY` parameter specifies the minimum delay issued by the
      service.
+   - the `APIGUARD_NUM_WORKERS` setting is crucial if you plan to use multiple
+     clients or threads in conjunction with server-side sleeping. As each
+     server-side sleep locks a worker thread in the API Guard, make sure you
+     plan ahead for enough workers to accomodate all your clients.
 
 2. Replace `YourSecretAuthToken` with your desired token.
 
@@ -210,7 +215,7 @@ service has initially been developed for:
         val API_GUARD_KEY = "YOUR AUTH TOKEN"
         val guard_response = khttp.get(
                                 "$API_GUARD_URL/request_access?handle_delay=true", 
-                                headers=mapOf("Authorization" to API_GUARD_KEY)
+                                headers=mapOf("Authorization" to "Bearer " + API_GUARD_KEY)
                                 ).text
         print("API Guard said: $guard_response")
     ```

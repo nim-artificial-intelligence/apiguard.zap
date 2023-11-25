@@ -8,6 +8,7 @@ const DEFAULT_SLUG = "/api_guard";
 const DEFAULT_PORT: usize = 5500;
 const DEFAULT_LIMIT: i64 = 500;
 const DEFAULT_DELAY_MS: i64 = 30;
+const DEFAULT_WORKERS: i16 = 8;
 
 // TODO: security risk vs. convenience: should we allow a default token?
 const DEFAULT_AUTH_TOKEN: []const u8 = "renerocksai";
@@ -48,6 +49,7 @@ pub fn main() !void {
     const port = parseEnvInt(usize, "port", "APIGUARD_PORT", DEFAULT_PORT);
     const initial_limit = parseEnvInt(i64, "API request limit", "APIGUARD_RATE_LIMIT", DEFAULT_LIMIT);
     const initial_default_delay_ms = parseEnvInt(i64, "API default delay", "APIGUARD_DELAY", DEFAULT_DELAY_MS);
+    const num_workers = parseEnvInt(i16, "Number of worker threads", "APIGUARD_NUM_WORKERS", DEFAULT_WORKERS);
 
     const api_token = std.os.getenv("APIGUARD_AUTH_TOKEN") orelse "renerocksai";
 
@@ -62,9 +64,10 @@ pub fn main() !void {
         \\ USING API TOKEN    : {s}
         \\ USING API LIMIT    : {d}
         \\ USING API DELAY    : {d} ms
+        \\ USING NUM WORKERS  : {d}
         \\
         \\
-    , .{ port, slug, api_token, initial_limit, initial_default_delay_ms });
+    , .{ port, slug, api_token, initial_limit, initial_default_delay_ms, num_workers });
 
     var listener = zap.SimpleEndpointListener.init(allocator, .{
         .port = port,
@@ -97,7 +100,8 @@ pub fn main() !void {
 
     // start worker threads
     zap.start(.{
-        .threads = 8,
+        // yes, we call them workers here for simplicity
+        .threads = num_workers,
 
         // IMPORTANT!
         //
@@ -108,5 +112,5 @@ pub fn main() !void {
         // Try it with `zig build -Doptimize=ReleaseFast`
         .workers = 1,
     });
-    std.debug.print("\n\nThreads stopped\n", .{});
+    std.debug.print("\n\nAll worker threads stopped\n", .{});
 }

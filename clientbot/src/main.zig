@@ -203,4 +203,65 @@ pub fn main() !void {
     for (transaction_log.transactions.items) |transaction| {
         std.debug.print("{}\n", .{transaction});
     }
+    try saveTransactionLog(args, &transaction_log, args.out_file);
+}
+
+fn saveTransactionLog(args: Args, transaction_log: *TransactionLog, filename: []const u8) !void {
+    var f = try std.fs.cwd().createFile(filename, .{});
+    defer f.close();
+    var writer = f.writer();
+    try writer.print(
+        \\{{
+        \\   "config" : {{
+        \\      "num_threads": {d},
+        \\      "req_per_thread": {d},
+        \\      "url": "{s}",
+        \\      "auth_bearer": "{s}",
+        \\      "out_file": "{s}"
+        \\   }},
+        \\   "transactions" : [
+        \\
+    , .{ args.num_threads, args.num_req_per_thread, args.url, args.auth_bearer, args.out_file });
+    const num_transactions = transaction_log.transactions.items.len;
+    for (transaction_log.transactions.items) |t| {
+        const separator = if (t.sequence_number < num_transactions) "," else "";
+        const OptResponse = struct { delay_ms: ?usize = null, current_req_per_min: ?usize = null, server_side_delay: ?usize = null };
+        const response: OptResponse = blk: {
+            if (t.response) |r| {
+                break :blk .{
+                    .delay_ms = r.delay_ms,
+                    .current_req_per_min = r.current_req_per_min,
+                    .server_side_delay = r.server_side_delay,
+                };
+            } else {
+                break :blk .{};
+            }
+        };
+        try writer.print(
+            \\     {{
+            \\        "sequence_number": {d},
+            \\        "thread_id": {d},
+            \\        "thread_sequence_number": {d},
+            \\        "request_timestamp_ms": {d},
+            \\        "response_timestamp_ms": {?},
+            \\        "request": {{
+            \\            "url": "{s}",
+            \\            "handle_delay": {}
+            \\        }},
+            \\        "response": {{
+            \\            "delay_ms": {?},
+            \\            "current_req_per_min": {?},
+            \\            "server_side_delay": {?}
+            \\        }}
+            \\     }}{s}
+            \\
+        ,
+            .{ t.sequence_number, t.thread_id, t.thread_sequence_number, t.request_timestamp_ms, t.response_timestamp_ms, args.url, t.request.handle_delay, response.delay_ms, response.current_req_per_min, response.server_side_delay, separator },
+        );
+    }
+    try writer.print(
+        \\   ]
+        \\}}
+        \\
+    , .{});
 }

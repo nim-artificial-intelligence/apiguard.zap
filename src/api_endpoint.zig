@@ -123,13 +123,17 @@ fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
         var json_buf: [1024]u8 = undefined;
         var fba = std.heap.FixedBufferAllocator.init(&json_buf);
         var string = std.ArrayList(u8).init(fba.allocator());
+        var timestamps_count: usize = 0;
 
-        self.timestamps_mutex.lock();
-        defer self.timestamps_mutex.unlock();
+        {
+            self.timestamps_mutex.lock();
+            defer self.timestamps_mutex.unlock();
 
-        // remove old timestamps outside of our 60s window
-        while (self.timestamps.count() > 0 and current_time_ms - self.timestamps.peekMin().? > 60 * std.time.ms_per_s) { // TODO: maybe make this safer by not using .? here:
-            _ = self.timestamps.removeMin();
+            // remove old timestamps outside of our 60s window
+            while (self.timestamps.count() > 0 and current_time_ms - self.timestamps.peekMin().? > 60 * std.time.ms_per_s) { // TODO: maybe make this safer by not using .? here:
+                _ = self.timestamps.removeMin();
+            }
+            timestamps_count = self.timestamps.count();
         }
 
         const req_per_min: i64 = @intCast(self.timestamps.count());
@@ -139,10 +143,15 @@ fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
             delay_ms = adjusted_delay;
         }
 
-        if (self.timestamps.count() < self.rate_limit) {
+        if (timestamps_count < self.rate_limit) {
             // we've made less requests than are allowed per minute within the last minute
             // so we don't need to delay. we will delay for the default delay in that case
-            try self.timestamps.add(current_time_ms + delay_ms); // add the time in the future when this request won't count anymore: after the delay
+            {
+                self.timestamps_mutex.lock();
+                defer self.timestamps_mutex.unlock();
+                try self.timestamps.add(current_time_ms + delay_ms); // add the time in the future when this request won't count anymore: after the delay
+
+            }
             r.setStatus(.ok);
             if (handle_delay) {
                 std.log.debug("Sleeping for {} ms", .{delay_ms});
@@ -162,17 +171,23 @@ fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
             }
         } else {
             // we need to work out when we can make a request again
-            const oldest_request_time_ms = self.timestamps.peekMin().?;
+            {
+                self.timestamps_mutex.lock();
+                defer self.timestamps_mutex.unlock();
+                const oldest_request_time_ms = self.timestamps.peekMin().?;
 
-            // calculate the delay:
-            delay_ms = 60 * std.time.ms_per_s - (current_time_ms - oldest_request_time_ms);
-            if (delay_ms < self.delay_ms) delay_ms = self.delay_ms;
+                // calculate the delay:
+                delay_ms = 60 * std.time.ms_per_s - (current_time_ms - oldest_request_time_ms);
 
-            if (self.adjust_delay_under_load(current_time_ms)) |adjusted_delay| {
-                delay_ms = adjusted_delay;
+                if (delay_ms < self.delay_ms) delay_ms = self.delay_ms;
+
+                if (self.adjust_delay_under_load(current_time_ms)) |adjusted_delay| {
+                    delay_ms = adjusted_delay;
+                }
+
+                try self.timestamps.add(current_time_ms + delay_ms);
             }
 
-            try self.timestamps.add(current_time_ms + delay_ms);
             r.setStatus(.ok);
             if (handle_delay) {
                 std.log.debug("Sleeping for {} ms", .{delay_ms});
@@ -294,9 +309,15 @@ fn adjust_delay_under_load(self: *Self, current_time_ms: i64) ?i64 {
     for (escalations) |escalation| {
         if (current_req_per_min > @divTrunc(self.rate_limit * escalation.at_percent_of_limit, 100)) {
             // we need to become more aggressive with delays
-            const num_remaining_requests = self.rate_limit - current_req_per_min;
+            var num_remaining_requests = self.rate_limit - current_req_per_min;
             const num_remaining_milliseconds_in_minute = 60 * std.time.ms_per_s - (current_time_ms - self.timestamps.peekMin().?);
-            var delay_ms = @divTrunc(@divTrunc(num_remaining_milliseconds_in_minute, num_remaining_requests) * escalation.factor_of_delay, 100) + 1;
+            var delay_ms = blk: {
+                if (num_remaining_requests > 0) {
+                    break :blk @divTrunc(@divTrunc(num_remaining_milliseconds_in_minute, num_remaining_requests) * escalation.factor_of_delay, 100) + 1;
+                } else {
+                    break :blk num_remaining_milliseconds_in_minute;
+                }
+            };
 
             std.log.debug("\n\n\nHIT {} --> {}\n\n\n", .{ escalation, delay_ms });
 
