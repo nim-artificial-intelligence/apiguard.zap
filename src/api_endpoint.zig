@@ -119,93 +119,67 @@ fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
 
     const current_time_ms = std.time.milliTimestamp();
 
+    var json_buf: [1024]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&json_buf);
+    var string = std.ArrayList(u8).init(fba.allocator());
+    var delay_ms = self.delay_ms;
+    var req_per_min: i64 = 0;
+
     {
-        var json_buf: [1024]u8 = undefined;
-        var fba = std.heap.FixedBufferAllocator.init(&json_buf);
-        var string = std.ArrayList(u8).init(fba.allocator());
-        var timestamps_count: usize = 0;
+        self.timestamps_mutex.lock();
+        defer self.timestamps_mutex.unlock();
 
-        {
-            self.timestamps_mutex.lock();
-            defer self.timestamps_mutex.unlock();
-
-            // remove old timestamps outside of our 60s window
-            while (self.timestamps.count() > 0 and current_time_ms - self.timestamps.peekMin().? > 60 * std.time.ms_per_s) { // TODO: maybe make this safer by not using .? here:
-                _ = self.timestamps.removeMin();
-            }
-            timestamps_count = self.timestamps.count();
+        // remove old timestamps outside of our 60s window
+        while (self.timestamps.count() > 0 and current_time_ms - self.timestamps.peekMin().? > 60 * std.time.ms_per_s) { // TODO: maybe make this safer by not using .? here:
+            _ = self.timestamps.removeMin();
         }
 
-        const req_per_min: i64 = @intCast(self.timestamps.count());
-        var delay_ms = self.delay_ms;
+        req_per_min = self.get_current_req_per_min();
 
-        if (self.adjust_delay_under_load(current_time_ms)) |adjusted_delay| {
+        if (self.adjust_delay_under_load(req_per_min, current_time_ms)) |adjusted_delay| {
             delay_ms = adjusted_delay;
         }
 
-        if (timestamps_count < self.rate_limit) {
+        if (req_per_min < self.rate_limit) {
             // we've made less requests than are allowed per minute within the last minute
             // so we don't need to delay. we will delay for the default delay in that case
-            {
-                self.timestamps_mutex.lock();
-                defer self.timestamps_mutex.unlock();
-                try self.timestamps.add(current_time_ms + delay_ms); // add the time in the future when this request won't count anymore: after the delay
-
-            }
-            r.setStatus(.ok);
-            if (handle_delay) {
-                std.log.debug("Sleeping for {} ms", .{delay_ms});
-                var delay_ns: u64 = @intCast(delay_ms);
-                delay_ns *= std.time.ns_per_ms;
-
-                // TODO: demonstrate if or that this always works out well in parallel scenarios
-                std.time.sleep(delay_ns);
-
-                // send response
-                try std.json.stringify(.{ .delay_ms = 0, .current_req_per_min = req_per_min, .server_side_delay = delay_ms }, .{}, string.writer());
-                return r.sendJson(string.items);
-            } else {
-                // send response
-                try std.json.stringify(.{ .delay_ms = delay_ms, .current_req_per_min = req_per_min, .server_side_delay = 0 }, .{}, string.writer());
-                return r.sendJson(string.items);
-            }
+            try self.timestamps.add(current_time_ms + delay_ms); // add the time in the future when this request won't count anymore: after the delay
         } else {
+            //
+            // we usually never get here if clients are behaving OR if they use handle_delay=true
+            //
+
             // we need to work out when we can make a request again
-            {
-                self.timestamps_mutex.lock();
-                defer self.timestamps_mutex.unlock();
-                const oldest_request_time_ms = self.timestamps.peekMin().?;
+            const oldest_request_time_ms = self.timestamps.peekMin().?;
+            std.log.debug("\n\n\n************************************************************\n\n", .{});
+            // calculate the delay:
+            delay_ms = 60 * std.time.ms_per_s - (current_time_ms - oldest_request_time_ms);
 
-                // calculate the delay:
-                delay_ms = 60 * std.time.ms_per_s - (current_time_ms - oldest_request_time_ms);
+            if (delay_ms < self.delay_ms) delay_ms = self.delay_ms;
 
-                if (delay_ms < self.delay_ms) delay_ms = self.delay_ms;
-
-                if (self.adjust_delay_under_load(current_time_ms)) |adjusted_delay| {
-                    delay_ms = adjusted_delay;
-                }
-
-                try self.timestamps.add(current_time_ms + delay_ms);
+            if (self.adjust_delay_under_load(req_per_min, current_time_ms)) |adjusted_delay| {
+                delay_ms = adjusted_delay;
             }
 
-            r.setStatus(.ok);
-            if (handle_delay) {
-                std.log.debug("Sleeping for {} ms", .{delay_ms});
-                var delay_ns: u64 = @intCast(delay_ms);
-                delay_ns *= std.time.ns_per_ms;
-
-                // TODO: demonstrate if or that this always works out well in parallel scenarios
-                std.time.sleep(delay_ns);
-
-                // send response
-                try std.json.stringify(.{ .delay_ms = 0, .current_req_per_min = req_per_min, .server_side_delay = delay_ms }, .{}, string.writer());
-                return r.sendJson(string.items);
-            } else {
-                // send response
-                try std.json.stringify(.{ .delay_ms = delay_ms, .current_req_per_min = req_per_min, .server_side_delay = 0 }, .{}, string.writer());
-                return r.sendJson(string.items);
-            }
+            try self.timestamps.add(current_time_ms + delay_ms);
         }
+    }
+    r.setStatus(.ok);
+    if (handle_delay) {
+        std.log.debug("Sleeping for {} ms", .{delay_ms});
+        var delay_ns: u64 = @intCast(delay_ms);
+        delay_ns *= std.time.ns_per_ms;
+
+        // TODO: demonstrate if or that this always works out well in parallel scenarios
+        std.time.sleep(delay_ns);
+
+        // send response
+        try std.json.stringify(.{ .delay_ms = 0, .current_req_per_min = req_per_min, .server_side_delay = delay_ms }, .{}, string.writer());
+        return r.sendJson(string.items);
+    } else {
+        // send response
+        try std.json.stringify(.{ .delay_ms = delay_ms, .current_req_per_min = req_per_min, .server_side_delay = 0 }, .{}, string.writer());
+        return r.sendJson(string.items);
     }
 }
 
@@ -285,15 +259,27 @@ fn set_rate_limit(self: *Self, r: zap.SimpleRequest) !void {
     }
 }
 
+/// ONLY USE ON LOCKED timestamps!
+fn get_current_req_per_min(self: *Self) i64 {
+    // check how many requests fall < current_time_ms
+    const current_time_ms = std.time.milliTimestamp();
+    var it = self.timestamps.iterator();
+    var count: i64 = 0;
+    while (it.next()) |timestamp| {
+        if (timestamp < current_time_ms) {
+            count += 1;
+        }
+    }
+    return count;
+}
+
 /// now check if we need to adjust the delay
 /// our first thing is:
 /// if we're > 75% of limit:
 /// num_remaining_requests: limit - current_number_of_requ_per_min
 /// num_remaining_milliseconds_in_second: current_time_ms - self.timestamps.peekMin().?
 /// divide num_remaining_milliseconds_in_second / num_remaining_requests
-fn adjust_delay_under_load(self: *Self, current_time_ms: i64) ?i64 {
-    const current_req_per_min: i64 = @intCast(self.timestamps.count());
-
+fn adjust_delay_under_load(self: *Self, req_per_min: i64, current_time_ms: i64) ?i64 {
     const Escalation = struct {
         at_percent_of_limit: u8,
         factor_of_delay: i64,
@@ -302,17 +288,19 @@ fn adjust_delay_under_load(self: *Self, current_time_ms: i64) ?i64 {
         // .{ .at_percent_of_limit = 75, .factor_of_delay = 100 },
         // .{ .at_percent_of_limit = 50, .factor_of_delay = 105 },
         .{ .at_percent_of_limit = 75, .factor_of_delay = 100 },
-        .{ .at_percent_of_limit = 50, .factor_of_delay = 75 },
-        .{ .at_percent_of_limit = 25, .factor_of_delay = 50 },
-        .{ .at_percent_of_limit = 10, .factor_of_delay = 25 },
+        .{ .at_percent_of_limit = 50, .factor_of_delay = 100 },
+        .{ .at_percent_of_limit = 25, .factor_of_delay = 100 },
+        .{ .at_percent_of_limit = 0, .factor_of_delay = 100 },
     };
     for (escalations) |escalation| {
-        if (current_req_per_min > @divTrunc(self.rate_limit * escalation.at_percent_of_limit, 100)) {
-            // we need to become more aggressive with delays
-            var num_remaining_requests = self.rate_limit - current_req_per_min;
-            const num_remaining_milliseconds_in_minute = 60 * std.time.ms_per_s - (current_time_ms - self.timestamps.peekMin().?);
+        // if req_per_min > rate_limt * escalation_percent / 100
+        if (req_per_min > @divTrunc(self.rate_limit * escalation.at_percent_of_limit, 100)) {
+            var num_remaining_requests = self.rate_limit - req_per_min;
+            const consumed_ms_of_last_60s = (current_time_ms - self.timestamps.peekMin().?);
+            const num_remaining_milliseconds_in_minute = 60 * std.time.ms_per_s - consumed_ms_of_last_60s;
             var delay_ms = blk: {
                 if (num_remaining_requests > 0) {
+                    // delay_ms = (num_remaining_milliseconds_in_minute / num_remaining_requests) * escalation_factor / 100
                     break :blk @divTrunc(@divTrunc(num_remaining_milliseconds_in_minute, num_remaining_requests) * escalation.factor_of_delay, 100) + 1;
                 } else {
                     break :blk num_remaining_milliseconds_in_minute;
