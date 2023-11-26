@@ -2,6 +2,7 @@ const std = @import("std");
 const zap = @import("zap");
 const replyWithError = @import("endpoint_utils.zig").replyWithError;
 const Api = @import("api.zig");
+const assert = std.debug.assert;
 
 // we abuse a priority deque as normal deque
 const Deque = std.PriorityDequeue(i64, void, lessThanComparison);
@@ -25,7 +26,8 @@ endpoint: zap.SimpleEndpoint,
 slug: []const u8,
 rate_limit: i64,
 delay_ms: i64,
-free_passes: i64 = 0,
+// free_passes: i64 = 0,
+free_passes: Deque,
 
 const Self = @This();
 
@@ -33,6 +35,7 @@ pub fn init(alloc: std.mem.Allocator, slug: []const u8, rate_limit: i64, delay_m
     return .{
         .allocator = alloc,
         .timestamps = Deque.init(alloc, {}),
+        .free_passes = Deque.init(alloc, {}),
         .slug = slug, // we don't take a copy!
         .rate_limit = rate_limit,
         .delay_ms = delay_ms,
@@ -138,8 +141,13 @@ fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
         current_time_ms = std.time.milliTimestamp();
 
         // remove old timestamps outside of our 60s window
-        while (self.timestamps.count() > 0 and current_time_ms - self.timestamps.peekMin().? > 60 * std.time.ms_per_s) { // TODO: maybe make this safer by not using .? here:
+        while (self.timestamps.count() > 0 and current_time_ms - self.timestamps.peekMin().? > 60 * std.time.ms_per_s) {
             _ = self.timestamps.removeMin();
+        }
+
+        // clean free passes that haven't been used (older than 60s)
+        while (self.free_passes.count() > 0 and current_time_ms - self.free_passes.peekMin().? > 60 * std.time.ms_per_s) {
+            _ = self.free_passes.removeMin();
         }
 
         req_per_min = self.get_current_req_per_min();
@@ -147,27 +155,39 @@ fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
         if (self.timestamps.count() == 0) {
             // long time > 60s no request -> this is the first
             delay_ms = 0;
-            self.free_passes = 0;
+            // clean free passes just to be sure
+            while (self.free_passes.count() > 0) {
+                _ = self.free_passes.removeMin();
+            }
+            try self.timestamps.add(current_time_ms);
         } else {
-            if (self.free_passes > 0) {
+            // we have some timestamps = earlier requests in the current minute
+            var use_free_pass: bool = false;
+            if (self.free_passes.count() > 0) {
                 if (req_per_min < self.rate_limit) {
                     // use the free pass only if we're not at the top of the limit!
                     delay_ms = 0;
+                    try self.timestamps.add(self.free_passes.removeMin());
+                    use_free_pass = true;
                 }
-                self.free_passes -= 1;
-            } else {
+            }
+            if (use_free_pass == false) {
+                assert(self.timestamps.count() > 0); // the if statement above takes care but in case we copy this block
                 const most_recent_request = self.timestamps.peekMax().?;
                 if (most_recent_request > current_time_ms) {
                     // last request is in the future -> append delay_ms
-                    delay_ms = most_recent_request - current_time_ms + delay_ms;
+                    delay_ms = most_recent_request + delay_ms - current_time_ms;
                 } else {
                     // last request was in the past
                     const time_since_most_recent_request = current_time_ms - most_recent_request;
                     const timeslots_since_last_request = @divTrunc(time_since_most_recent_request, self.delay_ms);
-                    if (timeslots_since_last_request > 0) {
-                        self.free_passes = timeslots_since_last_request - 1;
-                        // use one free pass now
-                        delay_ms = 0;
+                    // we expect 1 timeslot since last request due to normal spacing. anything above can be used as a free pass
+                    if (timeslots_since_last_request > 1) {
+                        // add the free slots for later
+                        var free_pass_index: i64 = 0;
+                        while (free_pass_index < timeslots_since_last_request - 1) : (free_pass_index += 1) {
+                            try self.free_passes.add(time_since_most_recent_request + delay_ms * (free_pass_index + 1));
+                        }
                     }
                     // work out the next time slot
                     const slot_after_last_request = most_recent_request + self.delay_ms;
@@ -178,15 +198,12 @@ fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
                         // the next slot is in the future
                         delay_ms = slot_after_last_request - current_time_ms;
                         // just to be sure
-                        if (delay_ms < 0) {
-                            delay_ms = 0;
-                        }
+                        assert(delay_ms > 0);
                     }
                 }
+                try self.timestamps.add(current_time_ms + delay_ms);
             }
         }
-
-        try self.timestamps.add(current_time_ms + delay_ms);
     }
 
     r.setStatus(.ok);
@@ -296,48 +313,4 @@ fn get_current_req_per_min(self: *Self) i64 {
         }
     }
     return count;
-}
-
-/// now check if we need to adjust the delay
-/// our first thing is:
-/// if we're > 75% of limit:
-/// num_remaining_requests: limit - current_number_of_requ_per_min
-/// num_remaining_milliseconds_in_second: current_time_ms - self.timestamps.peekMin().?
-/// divide num_remaining_milliseconds_in_second / num_remaining_requests
-fn adjust_delay_under_load(self: *Self, req_per_min: i64, current_time_ms: i64) ?i64 {
-    const Escalation = struct {
-        at_percent_of_limit: u8,
-        factor_of_delay: i64,
-    };
-    const escalations = [_]Escalation{
-        // .{ .at_percent_of_limit = 75, .factor_of_delay = 100 },
-        // .{ .at_percent_of_limit = 50, .factor_of_delay = 105 },
-        .{ .at_percent_of_limit = 75, .factor_of_delay = 100 },
-        .{ .at_percent_of_limit = 50, .factor_of_delay = 100 },
-        .{ .at_percent_of_limit = 25, .factor_of_delay = 100 },
-        .{ .at_percent_of_limit = 0, .factor_of_delay = 100 },
-    };
-    for (escalations) |escalation| {
-        // if req_per_min > rate_limt * escalation_percent / 100
-        if (req_per_min > @divTrunc(self.rate_limit * escalation.at_percent_of_limit, 100)) {
-            var num_remaining_requests = self.rate_limit - req_per_min;
-            const consumed_ms_of_last_60s = (current_time_ms - self.timestamps.peekMin().?);
-            const num_remaining_milliseconds_in_minute = 60 * std.time.ms_per_s - consumed_ms_of_last_60s;
-            var delay_ms = blk: {
-                if (num_remaining_requests > 0) {
-                    // delay_ms = (num_remaining_milliseconds_in_minute / num_remaining_requests) * escalation_factor / 100
-                    break :blk @divTrunc(@divTrunc(num_remaining_milliseconds_in_minute, num_remaining_requests) * escalation.factor_of_delay, 100) + 1;
-                } else {
-                    break :blk num_remaining_milliseconds_in_minute;
-                }
-            };
-
-            std.log.debug("\n\n\nHIT {} --> {}\n\n\n", .{ escalation, delay_ms });
-
-            // just to be sure
-            if (delay_ms < self.delay_ms) delay_ms = self.delay_ms;
-            return delay_ms;
-        }
-    }
-    return null;
 }
