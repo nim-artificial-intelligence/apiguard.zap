@@ -1,6 +1,7 @@
 const std = @import("std");
 const zap = @import("zap");
 const replyWithError = @import("endpoint_utils.zig").replyWithError;
+const Api = @import("api.zig");
 
 // we abuse a priority deque as normal deque
 const Deque = std.PriorityDequeue(i64, void, lessThanComparison);
@@ -24,6 +25,7 @@ endpoint: zap.SimpleEndpoint,
 slug: []const u8,
 rate_limit: i64,
 delay_ms: i64,
+free_passes: i64 = 0,
 
 const Self = @This();
 
@@ -95,7 +97,12 @@ fn getRateLimit(self: *Self, r: zap.SimpleRequest) !void {
         // --- PARAM LOCK ---
         self.params_mutex.lock();
         defer self.params_mutex.unlock();
-        try std.json.stringify(.{ .success = true, .current_rate_limit = self.rate_limit, .delay_ms = self.delay_ms }, .{}, string.writer());
+        const response = Api.GetRateLimitResponse{
+            .success = true,
+            .current_rate_limit = self.rate_limit,
+            .delay_ms = self.delay_ms,
+        };
+        try std.json.stringify(response, .{}, string.writer());
     }
     return r.sendJson(string.items);
 }
@@ -117,17 +124,18 @@ fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
         break :blk false;
     };
 
-    const current_time_ms = std.time.milliTimestamp();
-
     var json_buf: [1024]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&json_buf);
     var string = std.ArrayList(u8).init(fba.allocator());
     var delay_ms = self.delay_ms;
     var req_per_min: i64 = 0;
+    var current_time_ms: i64 = 0;
 
     {
         self.timestamps_mutex.lock();
         defer self.timestamps_mutex.unlock();
+
+        current_time_ms = std.time.milliTimestamp();
 
         // remove old timestamps outside of our 60s window
         while (self.timestamps.count() > 0 and current_time_ms - self.timestamps.peekMin().? > 60 * std.time.ms_per_s) { // TODO: maybe make this safer by not using .? here:
@@ -136,34 +144,39 @@ fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
 
         req_per_min = self.get_current_req_per_min();
 
-        if (self.adjust_delay_under_load(req_per_min, current_time_ms)) |adjusted_delay| {
-            delay_ms = adjusted_delay;
-        }
-
-        if (req_per_min < self.rate_limit) {
-            // we've made less requests than are allowed per minute within the last minute
-            // so we don't need to delay. we will delay for the default delay in that case
-            try self.timestamps.add(current_time_ms + delay_ms); // add the time in the future when this request won't count anymore: after the delay
+        if (self.timestamps.count() == 0) {
+            // long time > 60s no request -> this is the first
+            delay_ms = 0;
+            self.free_passes = 0;
         } else {
-            //
-            // we usually never get here if clients are behaving OR if they use handle_delay=true
-            //
-
-            // we need to work out when we can make a request again
-            const oldest_request_time_ms = self.timestamps.peekMin().?;
-            std.log.debug("\n\n\n************************************************************\n\n", .{});
-            // calculate the delay:
-            delay_ms = 60 * std.time.ms_per_s - (current_time_ms - oldest_request_time_ms);
-
-            if (delay_ms < self.delay_ms) delay_ms = self.delay_ms;
-
-            if (self.adjust_delay_under_load(req_per_min, current_time_ms)) |adjusted_delay| {
-                delay_ms = adjusted_delay;
+            if (self.free_passes > 0) {
+                delay_ms = 0;
+                self.free_passes -= 1;
+            } else {
+                const most_recent_request = self.timestamps.peekMax().?;
+                if (most_recent_request > current_time_ms) {
+                    // last request is in the future -> append delay_ms
+                    delay_ms = most_recent_request - current_time_ms + delay_ms;
+                } else {
+                    // last request was in the past
+                    const time_since_most_recent_request = current_time_ms - most_recent_request;
+                    const timeslots_since_last_request = @divTrunc(time_since_most_recent_request, self.delay_ms);
+                    if (timeslots_since_last_request > 0) {
+                        self.free_passes = timeslots_since_last_request - 1;
+                        // use the free pass
+                        delay_ms = 0;
+                    } else {
+                        // work out the next time slot
+                        delay_ms = current_time_ms - most_recent_request + self.delay_ms;
+                        self.free_passes = 0;
+                    }
+                }
             }
-
-            try self.timestamps.add(current_time_ms + delay_ms);
         }
+
+        try self.timestamps.add(current_time_ms + delay_ms);
     }
+
     r.setStatus(.ok);
     if (handle_delay) {
         std.log.debug("Sleeping for {} ms", .{delay_ms});
@@ -174,11 +187,25 @@ fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
         std.time.sleep(delay_ns);
 
         // send response
-        try std.json.stringify(.{ .delay_ms = 0, .current_req_per_min = req_per_min, .server_side_delay = delay_ms }, .{}, string.writer());
+        const response = Api.RequestAccessResponse{
+            .delay_ms = 0,
+            .current_req_per_min = req_per_min,
+            .server_side_delay = delay_ms,
+            .my_time_ms = current_time_ms,
+            .make_request_at_ms = current_time_ms + delay_ms,
+        };
+        try std.json.stringify(response, .{}, string.writer());
         return r.sendJson(string.items);
     } else {
         // send response
-        try std.json.stringify(.{ .delay_ms = delay_ms, .current_req_per_min = req_per_min, .server_side_delay = 0 }, .{}, string.writer());
+        const response = Api.RequestAccessResponse{
+            .delay_ms = delay_ms,
+            .current_req_per_min = req_per_min,
+            .server_side_delay = 0,
+            .my_time_ms = current_time_ms,
+            .make_request_at_ms = current_time_ms + delay_ms,
+        };
+        try std.json.stringify(response, .{}, string.writer());
         return r.sendJson(string.items);
     }
 }
@@ -206,25 +233,16 @@ fn postInternal(self: *Self, r: zap.SimpleRequest) !void {
 fn set_rate_limit(self: *Self, r: zap.SimpleRequest) !void {
     // first, parse the params out of the request
     if (r.body) |body| {
-        const JsonSchema = struct {
-            new_limit: ?i64 = null,
-            new_delay: ?i64 = null,
-        };
-        var parsed = try self.allocator.create(std.json.Parsed(JsonSchema));
-        parsed.* = try std.json.parseFromSlice(JsonSchema, self.allocator, body, .{});
+        var parsed = try self.allocator.create(std.json.Parsed(Api.SetRateLimitRequest));
+        parsed.* = try std.json.parseFromSlice(Api.SetRateLimitRequest, self.allocator, body, .{});
         std.log.debug("Parsed json: {}", .{parsed.value});
 
         // second, validate param ranges
-        if (parsed.value.new_limit == null and parsed.value.new_delay == null) {
+        if (parsed.value.new_limit == null) {
             return replyWithError(self.allocator, r, "All values null!");
         }
 
-        const Response = struct {
-            new_rate_limit: ?i64 = null,
-            new_delay: ?i64 = null,
-        };
-
-        var response = Response{};
+        var response = Api.SetRateLimitResponse{};
         // third, update paramas
         {
             // --- PARAM LOCK ---
@@ -238,13 +256,8 @@ fn set_rate_limit(self: *Self, r: zap.SimpleRequest) !void {
                 self.rate_limit = new_limit;
                 response.new_rate_limit = new_limit;
             }
-            if (parsed.value.new_delay) |new_delay| {
-                if (new_delay < 0) {
-                    return replyWithError(self.allocator, r, "delay must be positive!");
-                }
-                self.delay_ms = new_delay;
-                response.new_delay = new_delay;
-            }
+            self.delay_ms = @divTrunc(60 * std.time.ms_per_s, self.rate_limit);
+            response.new_delay = self.delay_ms;
         }
 
         // forth, send response

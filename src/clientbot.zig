@@ -1,15 +1,10 @@
 const std = @import("std");
 const ServiceConfig = @import("serviceconfig.zig");
+const Api = @import("api.zig");
 
 const ClientRequest = struct {
     uri: std.Uri,
     handle_delay: bool,
-};
-
-const ServerResponse = struct {
-    delay_ms: usize,
-    current_req_per_min: usize,
-    server_side_delay: usize,
 };
 
 const Transaction = struct {
@@ -19,7 +14,7 @@ const Transaction = struct {
     request_timestamp_ms: isize,
     request: ClientRequest,
     response_timestamp_ms: ?isize = null,
-    response: ?ServerResponse = null,
+    response: ?Api.RequestAccessResponse = null,
 };
 
 const TransactionLog = struct {
@@ -98,7 +93,7 @@ fn makeRequests(a: std.mem.Allocator, thread_id: usize, howmany: usize, url: []c
         const rsize = try req.readAll(&buffer);
         transaction.response_timestamp_ms = std.time.milliTimestamp();
 
-        const parsed = try std.json.parseFromSlice(ServerResponse, a, buffer[0..rsize], .{});
+        const parsed = try std.json.parseFromSlice(Api.RequestAccessResponse, a, buffer[0..rsize], .{});
         defer parsed.deinit();
         transaction.response = parsed.value;
 
@@ -217,7 +212,6 @@ fn saveTransactionLog(args: Args, transaction_log: *TransactionLog, url: []const
         \\       "slug": "{s}",
         \\       "port": {d},
         \\       "initial_limit": {d},
-        \\       "initial_default_delay": {d},
         \\       "num_workers": {d},
         \\       "api_token": "{s}"
         \\   }},
@@ -226,7 +220,6 @@ fn saveTransactionLog(args: Args, transaction_log: *TransactionLog, url: []const
         scfg.slug,
         scfg.port,
         scfg.initial_limit,
-        scfg.initial_default_delay_ms,
         scfg.num_workers,
         scfg.api_token,
     });
@@ -252,18 +245,7 @@ fn saveTransactionLog(args: Args, transaction_log: *TransactionLog, url: []const
     const num_transactions = transaction_log.transactions.items.len;
     for (transaction_log.transactions.items, 0..) |t, i| {
         const separator = if (i < num_transactions - 1) "," else "";
-        const OptResponse = struct { delay_ms: ?usize = null, current_req_per_min: ?usize = null, server_side_delay: ?usize = null };
-        const response: OptResponse = blk: {
-            if (t.response) |r| {
-                break :blk .{
-                    .delay_ms = r.delay_ms,
-                    .current_req_per_min = r.current_req_per_min,
-                    .server_side_delay = r.server_side_delay,
-                };
-            } else {
-                break :blk .{};
-            }
-        };
+        const response: Api.RequestAccessResponse = t.response orelse .{};
         try writer.print(
             \\     {{
             \\        "sequence_number": {d},
@@ -278,12 +260,14 @@ fn saveTransactionLog(args: Args, transaction_log: *TransactionLog, url: []const
             \\        "response": {{
             \\            "delay_ms": {?},
             \\            "current_req_per_min": {?},
-            \\            "server_side_delay": {?}
+            \\            "server_side_delay": {?},
+            \\            "my_time_ms": {?},
+            \\            "make_request_at": {?}
             \\        }}
             \\     }}{s}
             \\
         ,
-            .{ t.sequence_number, t.thread_id, t.thread_sequence_number, t.request_timestamp_ms, t.response_timestamp_ms, url, t.request.handle_delay, response.delay_ms, response.current_req_per_min, response.server_side_delay, separator },
+            .{ t.sequence_number, t.thread_id, t.thread_sequence_number, t.request_timestamp_ms, t.response_timestamp_ms, url, t.request.handle_delay, response.delay_ms, response.current_req_per_min, response.server_side_delay, response.my_time_ms, response.make_request_at_ms, separator },
         );
     }
     try writer.print(

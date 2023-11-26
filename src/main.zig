@@ -24,7 +24,7 @@ pub fn main() !void {
     }
 
     const config = ServiceConfig.init();
-
+    const delay_ms: i64 = @divTrunc(60 * std.time.ms_per_s, config.initial_limit);
     std.debug.print(
         \\
         \\
@@ -39,7 +39,7 @@ pub fn main() !void {
         \\ USING NUM WORKERS  : {d}
         \\
         \\
-    , .{ config.port, config.slug, config.api_token, config.initial_limit, config.initial_default_delay_ms, config.num_workers });
+    , .{ config.port, config.slug, config.api_token, config.initial_limit, delay_ms, config.num_workers });
 
     var listener = zap.SimpleEndpointListener.init(allocator, .{
         .port = config.port,
@@ -51,7 +51,7 @@ pub fn main() !void {
 
     // Serves a JSON API
     //
-    var api_endpoint = ApiEndpoint.init(allocator, config.slug, config.initial_limit, config.initial_default_delay_ms);
+    var api_endpoint = ApiEndpoint.init(allocator, config.slug, config.initial_limit, delay_ms);
 
     // create authenticator
     const Authenticator = zap.BearerAuthSingle;
