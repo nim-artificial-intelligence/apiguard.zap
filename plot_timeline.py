@@ -38,11 +38,11 @@ def plot_timeline(client_id, transactions, file_path):
     request_numbers = list(range(1, len(delays) + 1))
 
     # Create a figure and axis
-    fig, ax = plt.subplots(figsize=(10, 5))
+    fig, ax = plt.subplots(figsize=(12, 5))
 
     # plot requ per min
     if 'all' in str(client_id).lower():
-        ax.plot(request_numbers, rpm, marker='o', linestyle='-', markersize=1, label="Requests Per Minute")
+        ax.plot(request_numbers, rpm, marker='o', color="cyan", linestyle='-', markersize=1, label="Requests Per Minute")
 
     # Calculate the mean of delays
     mean_delay = np.mean(delays)
@@ -97,7 +97,23 @@ def plot_timeline(client_id, transactions, file_path):
         bbox=dict(boxstyle='round,pad=0.4', facecolor='gray', edgecolor='none', alpha=0.8)  # Add a boxstyle for the background
     )
 
-    ax.legend()
+
+    # Add a legend to the plot at the upper right corner
+    legend = ax.legend(loc='upper right')
+
+    # Calculate the width and height of the legend box
+    legend_bbox = legend.get_bbox_to_anchor()
+    legend_width = legend_bbox.width
+    legend_height = legend_bbox.height
+
+    # Calculate the figure width and height
+    fig_width, fig_height = fig.get_size_inches()
+
+    # Set the bbox_to_anchor coordinates based on figure dimensions and legend dimensions
+    legend_x = 1.0 + (legend_width / fig_width)  # Adjusted x-coordinate
+    legend_y = 1.0  # Keep it at the upper-right corner
+
+    ax.legend(loc='upper right', bbox_to_anchor=(1.3, legend_y))
 
     # Set labels for the x-axis (request sequence numbers)
     ax.set_xlabel('Request Sequence Number')
@@ -105,8 +121,8 @@ def plot_timeline(client_id, transactions, file_path):
     ax.set_title(f'Delays over time - rapid fire load ({file_path})')
 
     # Display the plot
-    plt.tight_layout()
-    plt.savefig(f'{file_path}.{client_id}.png')
+    # plt.tight_layout()
+    plt.savefig(f'{file_path}.{client_id}.png', bbox_inches='tight')
 
 
 if __name__ == "__main__":

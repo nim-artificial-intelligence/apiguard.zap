@@ -36,7 +36,12 @@ const TransactionLog = struct {
         self.transactions.deinit();
     }
 
-    pub fn newTransaction(self: *Self, url: []const u8, thread_id: usize, thread_sequence_number: usize) !Transaction {
+    pub fn newTransaction(
+        self: *Self,
+        url: []const u8,
+        thread_id: usize,
+        thread_sequence_number: usize,
+    ) !Transaction {
         {
             self.transaction_lock.lock();
             defer self.transaction_lock.unlock();
@@ -70,7 +75,20 @@ const TransactionLog = struct {
     }
 };
 
-fn makeRequests(a: std.mem.Allocator, thread_id: usize, howmany: usize, url: []const u8, auth_bearer: []const u8, transaction_log: *TransactionLog) !void {
+const ClientSleep = struct {
+    every_n_requests: usize,
+    every_n_delay_ms: usize,
+};
+
+fn makeRequests(
+    a: std.mem.Allocator,
+    thread_id: usize,
+    howmany: usize,
+    url: []const u8,
+    auth_bearer: []const u8,
+    transaction_log: *TransactionLog,
+    client_sleep: ?ClientSleep,
+) !void {
     var thread_sequence_number: usize = 0;
 
     var h = std.http.Headers{ .allocator = a };
@@ -78,6 +96,12 @@ fn makeRequests(a: std.mem.Allocator, thread_id: usize, howmany: usize, url: []c
     try h.append("Authorization", auth_bearer);
 
     while (thread_sequence_number < howmany) : (thread_sequence_number += 1) {
+        if (client_sleep) |sleep| {
+            if ((thread_sequence_number % sleep.every_n_requests) == 0) {
+                std.time.sleep(sleep.every_n_delay_ms * std.time.ns_per_ms);
+            }
+        }
+
         var transaction = try transaction_log.newTransaction(url, thread_id, thread_sequence_number);
 
         var http_client: std.http.Client = .{ .allocator = a };
@@ -101,14 +125,40 @@ fn makeRequests(a: std.mem.Allocator, thread_id: usize, howmany: usize, url: []c
     }
 }
 
-fn makeRequestThread(a: std.mem.Allocator, thread_id: usize, howmany: usize, url: []const u8, auth_bearer: []const u8, tlog: *TransactionLog) !std.Thread {
-    return try std.Thread.spawn(.{}, makeRequests, .{ a, thread_id, howmany, url, auth_bearer, tlog });
+fn makeRequestThread(
+    a: std.mem.Allocator,
+    thread_id: usize,
+    howmany: usize,
+    url: []const u8,
+    auth_bearer: []const u8,
+    tlog: *TransactionLog,
+    client_sleep: ?ClientSleep,
+) !std.Thread {
+    return try std.Thread.spawn(.{}, makeRequests, .{
+        a,
+        thread_id,
+        howmany,
+        url,
+        auth_bearer,
+        tlog,
+        client_sleep,
+    });
 }
 
 pub fn usage() !void {
     const stdout = std.io.getStdOut().writer();
     const progname = "clientbot";
-    try stdout.print("Usage: {s} num-threads requests-per-thread handle_delay outfile\n", .{progname});
+    try stdout.print(
+        \\Usage: {s} num-threads requests-per-thread handle_delay outfile [n (requests)] [sleep_ms]
+        \\
+        \\ num-threads          : how many clients should be simulated; 1 thread per client
+        \\ requests-per-thread  : how many requests should each client make
+        \\ handle_delay         : whether `?handle_delay=true` should be passed to force server_side_delay
+        \\ outfile              : filename to write the JSON output to
+        \\ n (requests)         : OPTIONAL: let client sleep every n requests
+        \\ sleep_ms             : OPTIONAL: if n: how long the client should sleep
+        \\
+    , .{progname});
 }
 
 const Args = struct {
@@ -117,6 +167,8 @@ const Args = struct {
     handle_delay: bool = true,
     num_req_per_thread: usize = 0,
     out_file: []const u8 = "",
+    every_n_requests: ?usize = null,
+    every_n_delay_ms: ?usize = null,
 };
 
 fn get_next_arg_str(it: *std.process.ArgIterator) ![]const u8 {
@@ -136,6 +188,22 @@ fn parse_args(a: std.mem.Allocator) !Args {
     args.num_req_per_thread = try std.fmt.parseInt(usize, try get_next_arg_str(&args_it), 10);
     args.handle_delay = std.mem.eql(u8, try get_next_arg_str(&args_it), "true");
     args.out_file = try get_next_arg_str(&args_it);
+    std.log.debug("trying to parse shit", .{});
+    args.every_n_requests = blk: {
+        if (get_next_arg_str(&args_it)) |every_n| {
+            break :blk try std.fmt.parseInt(usize, every_n, 10);
+        } else |_| {
+            break :blk null;
+        }
+    };
+    std.log.debug("trying to parse shit", .{});
+    args.every_n_delay_ms = blk: {
+        if (get_next_arg_str(&args_it)) |every_n| {
+            break :blk try std.fmt.parseInt(usize, every_n, 10);
+        } else |_| {
+            break :blk null;
+        }
+    };
     return args;
 }
 
@@ -153,19 +221,45 @@ pub fn main() !void {
         std.os.exit(1);
     };
     const scfg = ServiceConfig.init();
-    const url = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}{s}/request_access?handle_delay={}", .{ scfg.port, scfg.slug, args.handle_delay });
+    const url = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}{s}/request_access?handle_delay={}", .{
+        scfg.port,
+        scfg.slug,
+        args.handle_delay,
+    });
     defer allocator.free(url);
     try stderr.print(
         \\Using args:
-        \\    progname        : {s}
-        \\    num_threads     : {d}
-        \\    req_per_thread  : {d}
-        \\    url             : {s}
-        \\    auth_bearer     : {s}
-        \\    out_file        : {s}
+        \\    progname           : {s}
+        \\    num_threads        : {d}
+        \\    req_per_thread     : {d}
+        \\    url                : {s}
+        \\    auth_bearer        : {s}
+        \\    out_file           : {s}
+        \\    every_n_requests   : {?}
+        \\    every_n_delay_ms   : {?}
         \\
         \\
-    , .{ args.progname, args.num_threads, args.num_req_per_thread, url, scfg.api_token, args.out_file });
+    , .{
+        args.progname,
+        args.num_threads,
+        args.num_req_per_thread,
+        url,
+        scfg.api_token,
+        args.out_file,
+        args.every_n_requests,
+        args.every_n_delay_ms,
+    });
+
+    const client_sleep: ?ClientSleep = blk: {
+        if (args.every_n_requests != null and args.every_n_delay_ms != null) {
+            break :blk ClientSleep{
+                .every_n_requests = args.every_n_requests.?,
+                .every_n_delay_ms = args.every_n_delay_ms.?,
+            };
+        } else {
+            break :blk null;
+        }
+    };
 
     var transaction_log = TransactionLog.init(allocator);
     defer transaction_log.deinit();
@@ -175,7 +269,15 @@ pub fn main() !void {
 
     var threads = std.ArrayList(std.Thread).init(allocator);
     for (0..args.num_threads) |i| {
-        const thread = try makeRequestThread(allocator, i, args.num_req_per_thread, url, auth_bearer, &transaction_log);
+        const thread = try makeRequestThread(
+            allocator,
+            i,
+            args.num_req_per_thread,
+            url,
+            auth_bearer,
+            &transaction_log,
+            client_sleep,
+        );
         threads.append(thread) catch break;
     }
 
@@ -267,7 +369,21 @@ fn saveTransactionLog(args: Args, transaction_log: *TransactionLog, url: []const
             \\     }}{s}
             \\
         ,
-            .{ t.sequence_number, t.thread_id, t.thread_sequence_number, t.request_timestamp_ms, t.response_timestamp_ms, url, t.request.handle_delay, response.delay_ms, response.current_req_per_min, response.server_side_delay, response.my_time_ms, response.make_request_at_ms, separator },
+            .{
+                t.sequence_number,
+                t.thread_id,
+                t.thread_sequence_number,
+                t.request_timestamp_ms,
+                t.response_timestamp_ms,
+                url,
+                t.request.handle_delay,
+                response.delay_ms,
+                response.current_req_per_min,
+                response.server_side_delay,
+                response.my_time_ms,
+                response.make_request_at_ms,
+                separator,
+            },
         );
     }
     try writer.print(
