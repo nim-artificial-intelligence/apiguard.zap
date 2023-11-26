@@ -221,6 +221,7 @@ fn saveTransactionLog(args: Args, transaction_log: *TransactionLog, url: []const
         \\       "num_workers": {d},
         \\       "api_token": "{s}"
         \\   }},
+        \\
     , .{
         scfg.slug,
         scfg.port,

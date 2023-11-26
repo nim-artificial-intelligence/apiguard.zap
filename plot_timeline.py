@@ -1,41 +1,39 @@
 import matplotlib.pyplot as plt
 import json
-
 import numpy as np
+from collections import defaultdict
+
+import os
 
 def read_events_from_file(file_path):
-    """
-    Read events from a file and extract server_side_delay values.
-
-    Args:
-        file_path (str): Path to the JSON file containing events.
-
-    Returns:
-        list of float: List of server_side_delay values.
-    """
-    delays = []
-
     with open(file_path, 'r') as file:
-        for line in file:
-            try:
-                json_data = json.loads(line)
-                server_side_delay = json_data.get("server_side_delay")
-                if server_side_delay is not None:
-                    delays.append(server_side_delay)
-            except json.JSONDecodeError:
-                # Handle invalid JSON lines if necessary
-                pass
+        json_data = json.loads(file.read())
 
-    return delays
+    transactions = json_data['transactions']
+    transactions_per_client = defaultdict(list)
+    for transaction in transactions:
+        transactions_per_client[transaction['thread_id']].append(transaction)
+
+    # now sort by client sequence number
+    for l in transactions_per_client.values():
+        l.sort(key=lambda x: x['thread_sequence_number'])
+    return json_data, transactions_per_client
 
 
-def plot_timeline(delays):
-    """
-    Plot a timeline of server_side_delays.
+def delays_from_txs(txs):
+    ret = []
+    for tx in txs:
+        if tx['response']['delay_ms'] > 0:
+            ret.append(tx['response']['delay_ms'])
+        else:
+            ret.append(tx['response']['server_side_delay'])
+    return ret
 
-    Args:
-        delays (list of float): List of server_side_delay values.
-    """
+
+def plot_timeline(client_id, transactions, file_path):
+    delays = delays_from_txs(transactions)
+    rpm = [x['response']['current_req_per_min'] for x in transactions]
+
     # Create a sequence of numbers to represent the requests
     request_numbers = list(range(1, len(delays) + 1))
 
@@ -47,6 +45,7 @@ def plot_timeline(delays):
 
     # Calculate the mean of delays
     mean_delay = np.mean(delays)
+    mean_rpm = np.mean(rpm)
 
 
     # Initialize lists to store x and y values for blue and red delays
@@ -89,7 +88,7 @@ def plot_timeline(delays):
     ax.axhline(y=mean_delay, color='r', linestyle='--', label=f'Mean Delay: {mean_delay:.2f}')
 
     # Calculate the ratio
-    ratio = len(x_blue) / len(x_red)
+    ratio = len(x_blue) / len(x_red) if len(x_red) else 1
     print('ratio', ratio)
 
     # Add the ratio as text to the plot with a grey background and white foreground color
@@ -104,15 +103,34 @@ def plot_timeline(delays):
     # Set labels for the x-axis (request sequence numbers)
     ax.set_xlabel('Request Sequence Number')
     ax.set_ylabel('API Delay [ms]')
-    ax.set_title('Delays over time - rapid fire load')
+    ax.set_title(f'Delays over time - rapid fire load ({file_path})')
 
     # Display the plot
     plt.tight_layout()
-    plt.savefig('testloop.png')
+    plt.savefig(f'{file_path}.{client}.png')
 
 
 # Example usage:
 if __name__ == "__main__":
-    file_path = "testloop.out.json"  # Replace with the path to your JSON file
-    delays = read_events_from_file(file_path)
-    plot_timeline(delays)
+    import sys
+    if len(sys.argv) < 2:
+        file_path = "testloop.out.json"  # Replace with the path to your JSON file
+    else:
+        file_path = sys.argv[1]
+    json_data, tx_per_client = read_events_from_file(file_path)
+    clients = list(tx_per_client.keys())
+    for client in sorted(clients):
+        plot_timeline(client, tx_per_client[client], file_path)
+
+    # now write html
+    with open(f'{file_path}.html', 'wt') as f:
+        f.write('<html> <body>\n')
+        f.write(f'<h1>Report for {file_path}</h1>\n')
+        f.write('<h2>Server Config:</h2>\n')
+        f.write(f'<pre>{json_data["apiguard_config"]}</pre>\n')
+        f.write('<h2>Client Bot Config:</h2>\n')
+        f.write(f'<pre>{json_data["config"]}</pre>\n')
+        for client in sorted(clients):
+            f.write(f'<h2>Client {client}:</h2>\n')
+            f.write(f'<img src="{os.path.abspath(file_path)}.{client}.png"/>\n')
+        f.write('</body> </html>')
