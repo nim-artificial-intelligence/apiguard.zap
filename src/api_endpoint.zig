@@ -150,7 +150,10 @@ fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
             self.free_passes = 0;
         } else {
             if (self.free_passes > 0) {
-                delay_ms = 0;
+                if (req_per_min < self.rate_limit) {
+                    // use the free pass only if we're not at the top of the limit!
+                    delay_ms = 0;
+                }
                 self.free_passes -= 1;
             } else {
                 const most_recent_request = self.timestamps.peekMax().?;
@@ -163,12 +166,21 @@ fn requestAccess(self: *Self, r: zap.SimpleRequest) !void {
                     const timeslots_since_last_request = @divTrunc(time_since_most_recent_request, self.delay_ms);
                     if (timeslots_since_last_request > 0) {
                         self.free_passes = timeslots_since_last_request - 1;
-                        // use the free pass
+                        // use one free pass now
+                        delay_ms = 0;
+                    }
+                    // work out the next time slot
+                    const slot_after_last_request = most_recent_request + self.delay_ms;
+                    if (slot_after_last_request < current_time_ms) {
+                        // the next slot was in the past
                         delay_ms = 0;
                     } else {
-                        // work out the next time slot
-                        delay_ms = current_time_ms - most_recent_request + self.delay_ms;
-                        self.free_passes = 0;
+                        // the next slot is in the future
+                        delay_ms = slot_after_last_request - current_time_ms;
+                        // just to be sure
+                        if (delay_ms < 0) {
+                            delay_ms = 0;
+                        }
                     }
                 }
             }
