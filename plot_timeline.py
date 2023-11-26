@@ -40,12 +40,13 @@ def plot_timeline(client_id, transactions, file_path):
     # Create a figure and axis
     fig, ax = plt.subplots(figsize=(10, 5))
 
-    # Don't plot the delays on the timeline
-    # ax.plot(request_numbers, delays, marker='o', linestyle='-', markersize=1)
+    # plot requ per min
+    if 'all' in str(client_id).lower():
+        ax.plot(request_numbers, rpm, marker='o', linestyle='-', markersize=1, label="Requests Per Minute")
 
     # Calculate the mean of delays
     mean_delay = np.mean(delays)
-    mean_rpm = np.mean(rpm)
+    max_rpm = np.max(rpm)
 
 
     # Initialize lists to store x and y values for blue and red delays
@@ -80,10 +81,6 @@ def plot_timeline(client_id, transactions, file_path):
         else:
             plt.plot([request_numbers[i - 1], request_numbers[i]], [delays[i - 1], delays[i]], color='red', linestyle='-', linewidth=1, alpha=0.5)
 
-
-
-
-
     # Add a horizontal mean line
     ax.axhline(y=mean_delay, color='r', linestyle='--', label=f'Mean Delay: {mean_delay:.2f}')
 
@@ -93,12 +90,14 @@ def plot_timeline(client_id, transactions, file_path):
 
     # Add the ratio as text to the plot with a grey background and white foreground color
     ax.text(
-        0.7, 0.85, f'Ratio (<= mean / > mean): {ratio:.2f}',
+            0.7, 0.85, f'Mean Delay: {mean_delay}ms\nMax Requests per Minute: {max_rpm: .2f}',
         transform=ax.transAxes,
         backgroundcolor='gray',  # Grey background color
         color='white',  # White foreground color
         bbox=dict(boxstyle='round,pad=0.4', facecolor='gray', edgecolor='none', alpha=0.8)  # Add a boxstyle for the background
     )
+
+    ax.legend()
 
     # Set labels for the x-axis (request sequence numbers)
     ax.set_xlabel('Request Sequence Number')
@@ -124,9 +123,35 @@ if __name__ == "__main__":
     # now plot ALL in ONE
     transactions = json_data['transactions']
     transactions.sort(key=lambda x: x['sequence_number'])
-    plot_timeline('all', transactions, file_path)
+    plot_timeline('all_clients', transactions, file_path)
 
-    # TODO: plot (delayed) requests on a timeline using request_numbers + delay_ms or server_side_delay
+
+    # plot delays between all requests regardless of client
+    txs_copy = []
+    last_request_at = None
+    transactions.sort(key=lambda x: x['response']['make_request_at_ms'])
+    for tx in transactions:
+        rat = tx['response']['make_request_at_ms']
+        if last_request_at is None:
+            delay_ms = tx['response']['delay_ms']
+            if delay_ms == 0:
+                delay_ms = tx['response']['server_side_delay']
+            last_request_at = rat
+        else:
+            if last_request_at > rat:
+                print("FCK")
+                exit(1)
+            delay_ms = rat - last_request_at
+            last_request_at = rat
+        txs_copy.append({
+            'response': {
+                'delay_ms': delay_ms,
+                'server_side_delay': delay_ms,
+                'current_req_per_min': tx['response']['current_req_per_min']
+            }
+        })
+    plot_timeline('all_delays', txs_copy, file_path)
+
 
     # now write html
     with open(f'{file_path}.html', 'wt') as f:
@@ -140,7 +165,9 @@ if __name__ == "__main__":
             f.write(f'<h2>Client {client}:</h2>\n')
             f.write(f'<img src="{os.path.basename(file_path)}.{client}.png"/>\n')
         f.write('<h2>All Clients</h2>\n')
-        f.write(f'<img src="{os.path.basename(file_path)}.all.png"/>\n')
+        f.write(f'<img src="{os.path.basename(file_path)}.all_clients.png"/>\n')
+        f.write('<h2>Delays Between All Requests</h2>\n')
+        f.write(f'<img src="{os.path.basename(file_path)}.all_delays.png"/>\n')
         f.write('</body> </html>')
 
     # also, write CSV
@@ -156,6 +183,8 @@ if __name__ == "__main__":
                 'delay_ms',
                 'current_req_per_min',
                 'server_side_delay',
+                'my_time_ms',
+                'make_request_at_ms',
         ]
         f.write(','.join(fields) + '\n')
         for t in transactions:
