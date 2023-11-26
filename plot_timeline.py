@@ -107,10 +107,9 @@ def plot_timeline(client_id, transactions, file_path):
 
     # Display the plot
     plt.tight_layout()
-    plt.savefig(f'{file_path}.{client}.png')
+    plt.savefig(f'{file_path}.{client_id}.png')
 
 
-# Example usage:
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 2:
@@ -122,6 +121,13 @@ if __name__ == "__main__":
     for client in sorted(clients):
         plot_timeline(client, tx_per_client[client], file_path)
 
+    # now plot ALL in ONE
+    transactions = json_data['transactions']
+    transactions.sort(key=lambda x: x['sequence_number'])
+    plot_timeline('all', transactions, file_path)
+
+    # TODO: plot (delayed) requests on a timeline using request_numbers + delay_ms or server_side_delay
+
     # now write html
     with open(f'{file_path}.html', 'wt') as f:
         f.write('<html> <body>\n')
@@ -132,5 +138,34 @@ if __name__ == "__main__":
         f.write(f'<pre>{json_data["config"]}</pre>\n')
         for client in sorted(clients):
             f.write(f'<h2>Client {client}:</h2>\n')
-            f.write(f'<img src="{os.path.abspath(file_path)}.{client}.png"/>\n')
+            f.write(f'<img src="{os.path.basename(file_path)}.{client}.png"/>\n')
+        f.write('<h2>All Clients</h2>\n')
+        f.write(f'<img src="{os.path.basename(file_path)}.all.png"/>\n')
         f.write('</body> </html>')
+
+    # also, write CSV
+    with open(f'{file_path}.csv', 'wt') as f:
+        fields = [
+                'sequence_number', 
+                'thread_id',
+                'thread_sequence_number',
+                'request_timestamp_ms',
+                'response_timestamp_ms',
+                'url',
+                'handle_delay',
+                'delay_ms',
+                'current_req_per_min',
+                'server_side_delay',
+        ]
+        f.write(','.join(fields) + '\n')
+        for t in transactions:
+            lf = []
+            for fn in fields:
+                try:
+                    lf.append(str(t[fn]))
+                except KeyError:
+                    try:
+                        lf.append(str(t['request'][fn]))
+                    except KeyError:
+                        lf.append(str(t['response'][fn]))
+            f.write(','.join(lf) + '\n')
