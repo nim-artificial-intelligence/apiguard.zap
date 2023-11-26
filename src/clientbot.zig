@@ -250,8 +250,8 @@ fn saveTransactionLog(args: Args, transaction_log: *TransactionLog, url: []const
     });
 
     const num_transactions = transaction_log.transactions.items.len;
-    for (transaction_log.transactions.items) |t| {
-        const separator = if (t.sequence_number < num_transactions) "," else "";
+    for (transaction_log.transactions.items, 0..) |t, i| {
+        const separator = if (i < num_transactions - 1) "," else "";
         const OptResponse = struct { delay_ms: ?usize = null, current_req_per_min: ?usize = null, server_side_delay: ?usize = null };
         const response: OptResponse = blk: {
             if (t.response) |r| {
