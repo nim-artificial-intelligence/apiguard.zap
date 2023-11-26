@@ -182,7 +182,7 @@ if __name__ == "__main__":
             f.write(f'<img src="{os.path.basename(file_path)}.{client}.png"/>\n')
         f.write('<h2>All Clients</h2>\n')
         f.write(f'<img src="{os.path.basename(file_path)}.all_clients.png"/>\n')
-        f.write('<h2>Delays Between All Requests</h2>\n')
+        f.write('<h2>Real Delays Between All Requests (including voluntary Client pauses)</h2>\n')
         f.write(f'<img src="{os.path.basename(file_path)}.all_delays.png"/>\n')
         f.write('</body> </html>')
 
