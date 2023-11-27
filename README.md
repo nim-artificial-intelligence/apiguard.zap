@@ -18,23 +18,79 @@ request.
 ## Features
 
 - **Rate Limiting**: Dynamically control the number of API requests allowed over
-  a rolling 60-second window, supporting a constant minimum delay.
-- **Flexible Configuration**: Adjust the rate limit and minimum delay on-the-fly
-  as per your requirements.
+  a rolling 60-second window.
+- **Flexible Configuration**: Adjust the rate limit on-the-fly as per your
+  requirements.
 - **Authentication**: Secure endpoints with token-based authentication to ensure
   only authorized modifications to rate limits.
 - **Dual Delay Handling**: Choose between having the service handle request
   delays or providing delay information for client-side handling.
+- A powerful [clientbot](clientbot.md) to load-test the server under various
+  conditions.
 
-Here is its behavior with the default configuration:
+## How it works
 
-![](./testloop.png)
+This version of ApiGuard uses a new algorithm that has been both designed for
+and extensively tested against concurrent (multi client) scenarios.
+
+ApiGuard always works on a sliding 60 seconds window and defaults to a request
+delay defined by the requests per minute limit _n_.
+
+It rasterizes the 60s window into _n_ equidistant time-slots and assigns
+incoming requests to consecutive time-slots. 
+
+For n=500, the time-slots are 120ms apart. So the first request will have a
+delay of 0ms since it is the first one. The second request will be put on the
+second time-slot 120ms apart from the first -> delay=120ms, if both requests
+arrived at the same time.
+
+If the second request comes in 50ms after the first, then the allocated
+time-slot for it will still be the second time-slot 120ms apart from the first
+one. Since the request arrived 50ms "late", the effective delay will be 120ms -
+50ms = 70ms.
+
+If three requests arrive at the same time, the first one will get a delay of
+0ms, the second one of 120ms, and the third one of 240ms. A fourth request would
+be assigned time-slot number 4 at 360ms. If that fourth request is the first
+request of another client than the one that sent the first three, that other
+client's first request will be delayed by 360ms, according to its assigned
+time-slot.
+
+Time-slots that aren't used because of slow clients, will be put into a list of
+"free passes" that encounter **no delay**. This allows for quickly catching up
+and lowering the API request delay when the API hasn't been used for a few
+time-slots.
+
+However, free passes that are > 60s old need to be discarded as they slide out
+of the 60s window, to avoid a build-up that would interfere with the time-slots
+algorithm. For example, a client only making 1 request at second 0 and one at
+second 59, would create about 498 free passes. If the client then goes to sleep
+and tries to send 500 requests in one go 10 minutes later, the then > 10 minutes
+old 498 free passes must not be used to guarantee time-slotting to work.
+
+All the constraints mentioned above have been tested under load. See
+[clientbot](clientbot.md) for more information.
+
+The following example illustrates many of the things mentioned above: 5
+concurrent clients that sleep for 5s every 50 requests, allowing the server to
+use some of the free passes after those delays, etc. While for each individual
+client the mean delay is > 120ms, API-requests for all clients combined are
+still scheduled for roughly every 120ms.
+
+![](./l006_c3_r500s50d5000.json.all_clients.png)
 
 ## Getting Started
 
 ### Prerequisites
 
-- zig 0.11.0
+- Install zig 0.11.0 from [ziglang.org](https://ziglang.org) if you want to
+  build it yourself and use the [clientbot].
+- To generate plots during the optional load tests, python3 is required, too,
+  with the following packages installed:
+    - numpy
+    - matplotlib
+- I recommend using [nix](https://nixos.org) as a package manager and build tool. A nix flake for a devshell, regular builds, and docker builds is provided. It provides everything, including python packages, you need to hack on this server.
+
 
 ### Installation
 
@@ -46,6 +102,9 @@ Here is its behavior with the default configuration:
    ```bash
    cd apiguard.zap
    ```
+3. Build it (see below)
+4. Configure it
+5. Run it
 
 ### Configuration
 
@@ -55,17 +114,14 @@ Here is its behavior with the default configuration:
    APIGUARD_PORT=5500
    APIGUARD_AUTH_TOKEN=YourSecretAuthToken
    APIGUARD_SLUG=/api_guard
-   APIGUARD_DELAY=30
    APIGUARD_NUM_WORKERS=8
    ```
    Note: 
-   - the slug parameter is to add a prefix to the URL and is optional. If
-   you use e.g. `APIGUARD_SLUG=/api_guard`, your endpoint URLs change from
-   `http://host:port/...` to `http://host:port/api_guard/...`. This makes it easier
-   to add the service to an existing web server or deploy multiple instances of
-   api_guard for different APIs.
-   - the `APIGUARD_DELAY` parameter specifies the minimum delay issued by the
-     service.
+   - the slug parameter is to add a prefix to the URL and is optional. If you
+     use e.g. `APIGUARD_SLUG=/api_guard`, your endpoint URLs change from
+     `http://host:port/...` to `http://host:port/api_guard/...`. This makes it
+     easier to add the service to an existing web server or deploy multiple
+     instances of api_guard for different APIs.
    - the `APIGUARD_NUM_WORKERS` setting is crucial if you plan to use multiple
      clients or threads in conjunction with server-side sleeping. As each
      server-side sleep locks a worker thread in the API Guard, make sure you
@@ -74,9 +130,9 @@ Here is its behavior with the default configuration:
 2. Replace `YourSecretAuthToken` with your desired token.
 
 
-### Building and running the Service
+### Building and running the Service via zig
 
-Execute the following command to build the server:
+Execute the following command to build the server in debug mode:
 ```bash
 zig build
 ```
@@ -164,18 +220,22 @@ curl http://127.0.0.1:${APIGUARD_PORT}${APIGUARD_SLUG}/request_access
 
 - **GET /request_access**
   - URL Params: `handle_delay` (boolean)
-  - Headers: `Authorization: [Auth Token]`
+  - Headers: `Authorization: Bearer [Auth Token]`
   - Description: Request access for API usage, optionally handling delay server-side.
   - **Response**:
     - If `handle_delay` is `false` or not provided: Returns a JSON object with `delay_ms` indicating the number of milliseconds to wait before making the API request.
     - If `handle_delay` is `true`: Performs the delay server-side and returns a JSON object with `delay_ms` set to 0.
+    - The response fields `my_time_ms` and `make_request_at_ms` both are server
+      side timestamps in millisecond resolution. They let you know the time the
+      request was processed and the time the API request can be made (after the
+      delay).
   - **Examples**: 
     - [`AUTH_TOKEN=YOUR_TOKEN ./test_delay_handled.sh`](./test_delay_handled.sh): how to use `/request_access` **with `handle_delay=true`**
     - [`AUTH_TOKEN=YOUR_TOKEN ./test_delay_unhandled.sh`](./test_delay_unhandled.sh): how to use `/request_access` **without `handle_delay=true`**
 
 
 - **GET /get_rate_limit**
-  - Headers: `Authorization: [Auth Token]`
+  - Headers: `Authorization: Bearer [Auth Token]`
   - Description: Retrieve the current rate limit.
   - **Response**:
     - Returns a JSON object with 
@@ -186,7 +246,7 @@ curl http://127.0.0.1:${APIGUARD_PORT}${APIGUARD_SLUG}/request_access
 
 - **POST /set_rate_limit**
   - JSON Params: `new_limit` (integer), `new_delay` (integer) in milliseconds
-  - Headers: `Authorization: [Auth Token]`
+  - Headers: `Authorization: Bearer [Auth Token]`
   - Description: Update the rate limit to a new value.
   - **Response**:
     - On success: Returns a JSON object with `success` set to `true` and `new_rate_limit` indicating the updated rate limit value.
@@ -222,6 +282,8 @@ service has initially been developed for:
 
 This will let the server take care of rate limiting your API calls.
 
+**Note:** Make sure to prepend 'Bearer ' to your API token as shown above!
+
 ### Example Responses
 
 Please see the examples:
@@ -235,11 +297,23 @@ Please see the examples:
 #### /request_access
 - Success (with delay):
   ```json
-  {"delay_ms":0,"current_req_per_min":499,"server_side_delay":169
+  {
+    "delay_ms":0,
+    "current_req_per_min":499,
+    "server_side_delay":169,
+    "my_time_ms": 0, 
+    "make_request_at_ms": 169
+  }
   ```
 - Success (without delay):
   ```json
-  {"delay_ms":169,"current_req_per_min":499,"server_side_delay":0
+  {
+    "delay_ms":180,
+    "current_req_per_min":499,
+    "server_side_delay":0,
+    "my_time_ms": 0, 
+    "make_request_at_ms": 180
+  }
   ```
 
 #### /get_rate_limit

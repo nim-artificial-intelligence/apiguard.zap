@@ -90,7 +90,7 @@ def plot_timeline(client_id, transactions, file_path):
 
     # Add the ratio as text to the plot with a grey background and white foreground color
     ax.text(
-            0.7, 0.85, f'Mean Delay: {mean_delay}ms\nMax Requests per Minute: {max_rpm: .2f}',
+            0.7, 0.85, f'Mean Delay: {mean_delay:.2f}ms\nMax Requests per Minute: {max_rpm: .2f}',
         transform=ax.transAxes,
         backgroundcolor='gray',  # Grey background color
         color='white',  # White foreground color
