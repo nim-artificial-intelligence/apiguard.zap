@@ -2,11 +2,11 @@
 
 The clientbot allows for flexible testing of the server.
 
-### Building it
+## Building it
 
 The bot gets built along with the server when you run `zig build`.
 
-### Running it
+## Running it
 
 You run it from the commandline:
 
@@ -21,7 +21,7 @@ Usage: clientbot num-threads requests-per-thread handle_delay outfile [n (reques
  sleep_ms             : OPTIONAL: if n: how long the client should sleep
 ```
 
-### Pre-Configured runs
+## Pre-Configured runs
 
 Check out the [load_tests](./load_tests/) folder for scripts and its
 [results](./load_tests/results/) folder for the generated results. It contains
@@ -51,3 +51,35 @@ kill $pid
 python ../plot_timeline.py $OUTFILE
 
 ```
+
+### 1 Client x 1000 requests
+
+[results](./load_tests/results/l001_c1_r1000.json.html)
+
+### 2 Clients x 500 requests each
+
+[results](./load_tests/results/l002_c2_r500.json.html)
+
+### 5 Clients x 500 requests each
+
+[results](./load_tests/results/l003_c5_r500.json.html)
+
+### 10 Clients x 500 requests each
+
+[results](./load_tests/results/l004_c10_r500.json.html)
+
+### 2 Clients x 500 requests each, sleeping for 5s every 50 requests
+
+[results](./load_tests/results/l005_c2_r500s50d5000.json.html)
+
+### 3 Clients x 500 requests each, sleeping for 5s every 50 requests
+
+[results](./load_tests/results/l006_c3_r500s50d5000.json.html)
+
+### 1 Client x 1000 requests, sleeping for 5s every 50 requests
+
+[results](./load_tests/results/l007_c1_r1000s50d5000.json.html)
+
+### 5 clients x 500 requests each, sleeping for 5s every 100 requests
+
+[results](./load_tests/results/l008_c5_r500s100d5000.json.html)

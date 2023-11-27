@@ -1,5 +1,21 @@
 # ApiGuard
 
+- [Overview](#overview)
+- [Features](#features)
+- [How it works](#how-it-works)
+- [Getting Started](#getting-started)
+    - [Prerequisites](#prerequisites)
+    - [Installation](#installation)
+    - [Configuration](#configuration)
+    - [Building and Running via Zig](#building-and-running-the-service-via-zig)
+    - [Running the Service in Production](#running-the-service-in-production)
+    - [Running the Service via Docker
+      Container](#running-the-service-via-docker-container)
+    - [Furhat Kotlin Client Example](#furhat-kotlin-client-example)
+- [ApiGuard API](#apiguard-api)
+    - [Endpoints](#endpoints)
+    - [Example Responses](#example-responses)
+
 ## Overview
 
 ApiGuard is a rate limiting service designed to manage and protect API endpoints
@@ -42,7 +58,7 @@ incoming requests to consecutive time-slots.
 For n=500, the time-slots are 120ms apart. So the first request will have a
 delay of 0ms since it is the first one. The second request will be put on the
 second time-slot 120ms apart from the first -> delay=120ms, if both requests
-arrived at the same time.
+arrive at the same time.
 
 If the second request comes in 50ms after the first, then the allocated
 time-slot for it will still be the second time-slot 120ms apart from the first
@@ -56,7 +72,7 @@ request of another client than the one that sent the first three, that other
 client's first request will be delayed by 360ms, according to its assigned
 time-slot.
 
-Time-slots that aren't used because of slow clients, will be put into a list of
+Time-slots that aren't used because of slow clients will be put into a list of
 "free passes" that encounter **no delay**. This allows for quickly catching up
 and lowering the API request delay when the API hasn't been used for a few
 time-slots.
@@ -71,7 +87,7 @@ old 498 free passes must not be used to guarantee time-slotting to work.
 All the constraints mentioned above have been tested under load. See
 [clientbot](clientbot.md) for more information.
 
-The following example illustrates many of the things mentioned above: 5
+The following example illustrates many of the things mentioned above: 3
 concurrent clients that sleep for 5s every 50 requests, allowing the server to
 use some of the free passes after those delays, etc. While for each individual
 client the mean delay is > 120ms, API-requests for all clients combined are
@@ -188,10 +204,10 @@ curl http://127.0.0.1:${APIGUARD_PORT}${APIGUARD_SLUG}/request_access
 2. Load the image into docker:
     ```bash
     docker load < downloaded_file
-    # or, if you build it with nix:
+    # or, if you built it with nix:
     docker load < result
     ```
-3. Create an api_guard.rc file, see [configuration](#configuration) and set its PORT to
+3. Create an api_guard.rc file, see [configuration](#configuration), and set its PORT to
    5500. That port is just used inside the container:
    ```
    PORT=5500
@@ -214,7 +230,37 @@ curl http://127.0.0.1:${APIGUARD_PORT}${APIGUARD_SLUG}/request_access
     # run a simple request
     curl http://127.0.0.1:${APIGUARD_PORT}${APIGUARD_SLUG}/request_access
     ```
-## Usage
+### Furhat Kotlin Client Example
+
+Here comes a code snippet you can use in a Furhat robot skill which is what this
+service has initially been developed for:
+
+1. Add the `khttp` dependency to your `build.gradle`:
+    ```gradle
+    dependencies {
+        implementation 'com.furhatrobotics.furhatos:furhat-commons:2.7.1'
+        implementation 'com.theokanning.openai-gpt3-java:service:0.16.0'
+        compile 'khttp:khttp:1.0.0'
+    }
+    ```
+
+2. Before making a request to your API, insert the following lines:
+    ```kotlin
+        // make a khttp request to api guard
+        val API_GUARD_URL = "https://your.domain.org/api_guard"
+        val API_GUARD_KEY = "YOUR AUTH TOKEN"
+        val guard_response = khttp.get(
+                                "$API_GUARD_URL/request_access?handle_delay=true", 
+                                headers=mapOf("Authorization" to "Bearer " + API_GUARD_KEY)
+                                ).text
+        print("API Guard said: $guard_response")
+    ```
+
+This will let the server take care of rate limiting your API calls.
+
+**Note:** Make sure to prepend 'Bearer ' to your API token as shown above!
+
+## ApiGuard API
 
 ### Endpoints
 
@@ -253,36 +299,6 @@ curl http://127.0.0.1:${APIGUARD_PORT}${APIGUARD_SLUG}/request_access
     - On failure (e.g., invalid limit value or missing parameters): Returns a JSON object with `success` set to `false` and an `error` message detailing the issue.
   - **Example**: 
     - [`AUTH_TOKEN=YOUR_TOKEN ./test_set_params.sh`](./test_set_params.sh): how to set values via `/set_rate_limit`
-
-### Furhat Kotlin Example
-
-Here comes a code snippet you can use in a Furhat robot skill which is what this
-service has initially been developed for:
-
-1. Add the `khttp` dependency to your `build.gradle`:
-    ```gradle
-    dependencies {
-        implementation 'com.furhatrobotics.furhatos:furhat-commons:2.7.1'
-        implementation 'com.theokanning.openai-gpt3-java:service:0.16.0'
-        compile 'khttp:khttp:1.0.0'
-    }
-    ```
-
-2. Before making a request to your API, insert the following lines:
-    ```kotlin
-        // make a khttp request to api guard
-        val API_GUARD_URL = "https://your.domain.org/api_guard"
-        val API_GUARD_KEY = "YOUR AUTH TOKEN"
-        val guard_response = khttp.get(
-                                "$API_GUARD_URL/request_access?handle_delay=true", 
-                                headers=mapOf("Authorization" to "Bearer " + API_GUARD_KEY)
-                                ).text
-        print("API Guard said: $guard_response")
-    ```
-
-This will let the server take care of rate limiting your API calls.
-
-**Note:** Make sure to prepend 'Bearer ' to your API token as shown above!
 
 ### Example Responses
 
