@@ -216,8 +216,8 @@ curl -H "Authorization: Bearer $API_GUARD_KEY" http://127.0.0.1:${APIGUARD_PORT}
 
 4. Create a run directory and move the rc file there:
     ```bash
-    mkdir -p rundir/apiguard
-    mv api_guard.rc rundir/apiguard
+    mkdir -p rundir/api_guard
+    mv api_guard.rc rundir/api_guard
     ```
 
 5. Start the container (replace YOUR_PORT with the port you want):
