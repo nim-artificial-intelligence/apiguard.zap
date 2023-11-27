@@ -167,7 +167,7 @@ Test it via:
 # export rc file
 export $(cat "$XDG_CONFIG_HOME/api_guard/api_guard.rc" | grep -v '^#' | xargs)
 # run a simple request in another shell:
-curl http://127.0.0.1:${APIGUARD_PORT}${APIGUARD_SLUG}/request_access
+curl -H "Authorization: Bearer $API_GUARD_KEY" http://127.0.0.1:${APIGUARD_PORT}${APIGUARD_SLUG}/request_access
 ```
 
 ### Running the Service in Production
@@ -194,7 +194,7 @@ Test it via:
 # export api_guard.rc file
 export $(cat "$XDG_CONFIG_HOME/api_guard/api_guard.rc" | grep -v '^#' | xargs)
 # run a simple request
-curl http://127.0.0.1:${APIGUARD_PORT}${APIGUARD_SLUG}/request_access
+curl -H "Authorization: Bearer $API_GUARD_KEY" http://127.0.0.1:${APIGUARD_PORT}${APIGUARD_SLUG}/request_access
 ```
 
 ### Running the Service via Docker Container
@@ -228,7 +228,7 @@ curl http://127.0.0.1:${APIGUARD_PORT}${APIGUARD_SLUG}/request_access
     # export api_guard.rc file
     export $(cat "$XDG_CONFIG_HOME/api_guard/api_guard.rc" | grep -v '^#' | xargs)
     # run a simple request
-    curl http://127.0.0.1:${APIGUARD_PORT}${APIGUARD_SLUG}/request_access
+    curl -H "Authorization: Bearer $API_GUARD_KEY" http://127.0.0.1:${APIGUARD_PORT}${APIGUARD_SLUG}/request_access
     ```
 ### Furhat Kotlin Client Example
 
