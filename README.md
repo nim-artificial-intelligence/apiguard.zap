@@ -199,8 +199,9 @@ curl -H "Authorization: Bearer $API_GUARD_KEY" http://127.0.0.1:${APIGUARD_PORT}
 
 ### Running the Service via Docker Container
 
-1. Obtain the container from the download link you received (or build it
-   yourself via `nix build .#apiguard_docker`)
+1. Obtain the container from the [Releases
+   Section](https://github.com/nim-artificial-intelligence/apiguard.zap/releases)
+   (or build it yourself via `nix build .#apiguard_docker`)
 2. Load the image into docker:
     ```bash
     docker load < downloaded_file
