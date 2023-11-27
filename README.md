@@ -100,7 +100,7 @@ still scheduled for roughly every 120ms.
 ### Prerequisites
 
 - Install zig 0.11.0 from [ziglang.org](https://ziglang.org) if you want to
-  build it yourself and use the [clientbot].
+  build it yourself and use the [clientbot](clientbot.md).
 - To generate plots during the optional load tests, python3 is required, too,
   with the following packages installed:
     - numpy
